@@ -66,6 +66,13 @@ class Ranked(unittest.TestCase):
         self.assertEqual(len(seen), 20)
         self.assertEqual(len(report.failures), 1, str(report))
 
+    def test_a_none_entry_is_not_a_result_id(self):
+        old = {"q": ["a"]}
+        bar = df.RankedBar(k=2, min_overlap=1, equal_counts=False)
+        report = df.compare_ranked(old, old.__getitem__, lambda q: ["a", None], bar)
+        self.assertFalse(report.passed)
+        self.assertIn("new returned a NoneType entry", str(report))
+
     def test_an_empty_old_result_fails(self):
         old = {"q": []}
         report = df.compare_ranked(old, old.__getitem__, old.__getitem__, df.RankedBar(equal_counts=False))

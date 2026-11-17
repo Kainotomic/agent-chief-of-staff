@@ -70,9 +70,9 @@ def compare_ranked(inputs: Iterable, old: Callable[[object], Sequence], new: Cal
             if not problems and not isinstance(value, (list, tuple)):
                 problems.append(f"input {i}: {side} returned {type(value).__name__}, not a ranked list")
             elif not problems:
-                bad = next((r for r in value[:bar.k] if not isinstance(r, (str, int))), None)
-                if bad is not None:
-                    problems.append(f"input {i}: {side} returned a {type(bad).__name__} entry, not a result id")
+                bad = [r for r in value[:bar.k] if not isinstance(r, (str, int))]
+                if bad:
+                    problems.append(f"input {i}: {side} returned a {type(bad[0]).__name__} entry, not a result id")
         if problems:
             report.failures += problems
             continue
