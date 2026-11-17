@@ -5,8 +5,8 @@ against a pass bar fixed before the first call (docs/verification.md).
 Rules this sketch implements:
   - the bar is an argument of the run, so it is set before any result exists; the report carries it, so a reader
     sees what the result was judged against;
-  - every input goes to both services: a call that raises, or returns something of the wrong shape, is a failure
-    on that input, never a skip;
+  - every input goes to both services: a call that raises, or returns something of the wrong shape (a ranked list
+    with an entry that is not a result id), is a failure on that input, never a skip, and the run goes on;
   - no inputs, or no comparable result, is a failure: a comparison of nothing passes nothing;
   - ranked results (a memory service's recall) pass when the top result matches on the required share of inputs,
     the top k overlap by at least min_overlap on every input (or all of the old top k, when it holds fewer), and
@@ -59,7 +59,7 @@ def _call(service: Callable, item, side: str, i: int):
 def compare_ranked(inputs: Iterable, old: Callable[[object], Sequence], new: Callable[[object], Sequence],
                    bar: RankedBar, count_old: Callable[[], int] | None = None,
                    count_new: Callable[[], int] | None = None) -> Report:
-    """old(item) and new(item) return result ids, best first."""
+    """old(item) and new(item) return result ids (strings or integers), best first."""
     report, same_top, ranked = Report(bar), 0, 0
     for i, item in enumerate(inputs):
         report.compared += 1
@@ -69,6 +69,10 @@ def compare_ranked(inputs: Iterable, old: Callable[[object], Sequence], new: Cal
         for side, value in (("old", a), ("new", b)):
             if not problems and not isinstance(value, (list, tuple)):
                 problems.append(f"input {i}: {side} returned {type(value).__name__}, not a ranked list")
+            elif not problems:
+                bad = next((r for r in value[:bar.k] if not isinstance(r, (str, int))), None)
+                if bad is not None:
+                    problems.append(f"input {i}: {side} returned a {type(bad).__name__} entry, not a result id")
         if problems:
             report.failures += problems
             continue

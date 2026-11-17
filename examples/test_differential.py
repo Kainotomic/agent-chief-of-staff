@@ -54,6 +54,18 @@ class Ranked(unittest.TestCase):
         self.assertFalse(ranked(table({"q1": None})).passed)
         self.assertFalse(ranked(table({"q1": "doc-1-0"})).passed)
 
+    def test_an_entry_that_is_not_an_id_fails_that_input_and_the_run_goes_on(self):
+        seen = []
+
+        def new(q):
+            seen.append(q)
+            return ["doc-1-0", {"id": "doc-1-1"}] if q == "q1" else OLD[q]
+        report = ranked(new)
+        self.assertFalse(report.passed)
+        self.assertIn("input 1: new returned a dict entry, not a result id", str(report))
+        self.assertEqual(len(seen), 20)
+        self.assertEqual(len(report.failures), 1, str(report))
+
     def test_an_empty_old_result_fails(self):
         old = {"q": []}
         report = df.compare_ranked(old, old.__getitem__, old.__getitem__, df.RankedBar(equal_counts=False))
