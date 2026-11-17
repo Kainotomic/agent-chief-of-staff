@@ -97,7 +97,7 @@ A row closes only by moving to `ledger/closed-YYYY-MM.md` with proof the coordin
 | `deployed` | Deployed | The deploy or run id plus a live check status (`readyz 200`, `healthy`); the text names the user flow re-run |
 | `config` | Config changed | The setting read back after the write (`name=value`); the words "read back" alone are not a setting |
 | `message` | Message sent | The message, comment or review id from the API response |
-| `owner` | Owner decided | The owner's words, in quotes, with the exact time; an approximate or placeholder time (`~05:05Z`, `circa 5:05`, `xx:xxZ`) is refused |
+| `owner` | Owner decided | The owner's words, in quotes, and outside the quotes the exact time they were said; an approximate or placeholder time there (`~05:05Z`, `circa 5:05`, `xx:xxZ`) is refused |
 | `folded` | Same work as another row | The open row id it was folded into; that row must already mention this one |
 | `void` | Opened by mistake | The reason, naming the test or accident that created it |
 

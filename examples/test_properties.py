@@ -146,6 +146,12 @@ class FoundByTheProperties(TempDir):
         led.close_row(row["id"], "owner", '"A" 2026-01-16 14:02Z', "price A chosen", now=T0)
         self.assertEqual(led.rows(), [])
 
+    def test_the_owner_s_own_words_may_name_a_rough_time(self):
+        for words in ("Schedule the deploy around 5:00 UTC", "ship it ~05:00Z", "after xx:xx is fine"):
+            self.assertIsNone(ls.proof_problem("owner", f'"{words}" 2026-01-16 14:02Z', "the owner decided"), words)
+            self.assertIsNotNone(ls.proof_problem("owner", f'"{words}" 2026-01-16', "the owner decided"), words)
+            self.assertIsNotNone(ls.proof_problem("owner", f'"{words}" 2026-01-16 ~14:02Z', "the owner decided"), words)
+
 
 class OneLiveClaimPerRow(TempDir):
     """Two live claims on one row are refused, with or without a tracker key."""

@@ -564,10 +564,12 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
         return "a config proof needs the setting read back (name=value)"
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
-    if kind == "owner" and not (QUOTED.search(ref) and WHEN.search(ref)):
-        return "an owner proof needs the owner's quoted words and the time"
-    if kind == "owner" and ROUGH_TIME.search(ref):
-        return f"an owner proof needs the exact minute from the clock, not {ROUGH_TIME.search(ref).group(0)!r}"
+    if kind == "owner":
+        stamp = QUOTED.sub(" ", ref)  # the time the owner decided, not a time inside their words
+        if not (QUOTED.search(ref) and WHEN.search(stamp)):
+            return "an owner proof needs the owner's quoted words and, outside them, the time"
+        if ROUGH_TIME.search(stamp):
+            return f"an owner proof needs the exact minute from the clock, not {ROUGH_TIME.search(stamp).group(0)!r}"
     if kind == "folded" and not ROW_ID.match(ref):
         return "a folded proof's ref is the open row id it was folded into"
     if kind == "void" and not VOID_REASON.search(f"{ref} {text}"):
