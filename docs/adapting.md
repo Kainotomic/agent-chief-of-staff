@@ -64,6 +64,8 @@ The scripts are small and deterministic; test them like any other code.
 
 Inject every external call (VCS, tracker, runner, clock) so tests run offline.
 
+Add property tests on the invariants (a written row reads back identical; every placeholder timestamp is refused; prose proof is refused for every kind) and differential checks before any cutover; see [verification.md](verification.md).
+
 ## Things to decide up front
 
 - Which identities your agents use on the VCS host and tracker, and whether the coordinator writes as the owner or as its own account. If it writes as the owner, intake must recognize its own comments.

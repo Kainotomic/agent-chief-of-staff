@@ -22,6 +22,11 @@ Steps quoted under the brief's "Pre-approved" section are done without stopping,
 
 ### External items
 Never create tickets, issues, PRs, comments or messages unless the brief explicitly asks for that item.
+A comment that asks or addresses a person mentions them for real: the tracker's structured mention with
+their account id (a plain-text name or a Markdown `@name` notifies nobody). Read the comment back and check
+the mention carries the user id. You don't send email: if the person also needs an email, add a line
+`NOTIFY-NEEDED <link>: <one line>` to your report and the coordinator sends it.
+Never approve a PR, and never use a shared or admin account to approve or merge one.
 
 ### Calendar
 No calendar creates, edits, deletes or invites on any account. If one is needed, report it and stop.
@@ -54,6 +59,17 @@ other session holds that stack. Never edit the ledger; the coordinator owns it.
 
   kind: ci, review, deploy, render, date, person or other. ref: one checkable token (`org/repo#PR`, a run
   id, a deploy id, a URL, a row id). check-by: `HH:MMZ`, `+90m` or ISO UTC. Only `WAIT` is required.
+
+### Verify the change
+- Cheap checks first: the repo's tests, build and lint pass before you open a PR or report done.
+- Then run the change end to end: drive the real app (browser, simulator or CLI) through the flow you
+  changed, or make a real authenticated call to the service. Use the repo's `verify` skill when it has one.
+  Unit tests alone are not proof; if you can't run it end to end, say so under Unverified.
+- After 3 failed fix rounds on the same failure, stop: report what each round tried and showed, and end
+  with `WAIT person <row id>`.
+- Never skip, sleep or retry a failing or flaky test to get green. Fix it, or delete it and record the
+  reason in the PR body. "Pre-existing failure" is a finding to report, not a pass.
+- Tests stub every external call; a test must never reach a real database, tracker or host.
 
 ### Proof
 "Done" is proven in this run: quote the exit code and summary count, the CI conclusion on the head SHA,

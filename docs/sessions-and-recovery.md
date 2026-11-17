@@ -91,6 +91,8 @@ A stop from the owner in any session writes `state/halt.json` with the time and 
 - **Every sweep covers every host.** Dead-worker sweeps, the boot brief and schedule health must list each host explicitly. A sweep that silently covers only the local machine is the most common gap.
 - **Remote credentials** for reaching another host's agent runner come from the secret store into the child process's environment only, are never printed, and a locked store marks that host "unreachable" rather than retrying.
 - **Placement is written policy** (see [dispatch.md](dispatch.md)), not a habit.
+- **The coordinator does not live on a personal workstation.** Run the primary on an always-on host, keep the workstations as warm standbys, and have a watchdog outside that host check the primary is alive. A laptop lid closing should not stop the fleet.
+- **Its services don't depend on one special host either.** The services the coordinator relies on at runtime (the memory service, the model gateway) must keep working when any single special host, such as a GPU host, is down. Run the embedder next to the memory service, on CPU if need be, rather than sending memory text to a new outside vendor.
 
 ## Recovery
 
