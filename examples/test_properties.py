@@ -147,10 +147,15 @@ class FoundByTheProperties(TempDir):
         self.assertEqual(led.rows(), [])
 
     def test_the_owner_s_own_words_may_name_a_rough_time(self):
-        for words in ("Schedule the deploy around 5:00 UTC", "ship it ~05:00Z", "after xx:xx is fine"):
-            self.assertIsNone(ls.proof_problem("owner", f'"{words}" 2026-01-16 14:02Z', "the owner decided"), words)
-            self.assertIsNotNone(ls.proof_problem("owner", f'"{words}" 2026-01-16', "the owner decided"), words)
-            self.assertIsNotNone(ls.proof_problem("owner", f'"{words}" 2026-01-16 ~14:02Z', "the owner decided"), words)
+        words = ("Schedule the deploy around 5:00 UTC", "ship it ~05:00Z", "after xx:xx is fine",
+                 "don't deploy around 5:00 UTC", "don’t deploy around 5:00 UTC", "it's fine, ship ~5:00")
+        quotes = (('"', '"'), ("“", "”"), ("‘", "’"), ("'", "'"))
+        for said in words:
+            for left, right in quotes:
+                quoted = f"{left}{said}{right}"
+                self.assertIsNone(ls.proof_problem("owner", f"{quoted} 2026-01-16 14:02Z", "decided"), quoted)
+                self.assertIsNotNone(ls.proof_problem("owner", f"{quoted} 2026-01-16", "decided"), quoted)
+                self.assertIsNotNone(ls.proof_problem("owner", f"{quoted} 2026-01-16 ~14:02Z", "decided"), quoted)
 
 
 class OneLiveClaimPerRow(TempDir):

@@ -93,6 +93,9 @@ ID_TOKEN = re.compile(r"(?<![\w.-])(?=[\w.-]*\d)[\w.-]{4,}(?![\w.-])")
 READ_BACK = re.compile(r"\w\s*(?:==?|->|→)\s*\S")  # the setting as read back: name=value, not the words "read back"
 MESSAGE_ID = re.compile(r"\d{4,}")
 QUOTED = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
+# The owner's words as one span: each opening quote matched to its own closing one, and an apostrophe followed by a
+# letter (don't, don’t) stays inside the words.
+QUOTE_SPAN = re.compile(r"\"[^\"]*\"|“[^”]*”|‘(?:[^’]|’(?=\w))*’(?!\w)|(?<!\w)'(?:[^']|'(?=\w))*'(?!\w)")
 WHEN = re.compile(r"\b\d{1,2}:\d\d(?!\d)")  # a time of day, not a bare date
 # An approximate (~05:05Z, circa 5:05) or placeholder (xx:xxZ, 05:xx, HH:MM) time: not the minute from the clock.
 ROUGH_TIME = re.compile(r"(?:[~≈∼]|\b(?:about|approx(?:imately|\.)?|around|circa|ca\.|roughly)(?=\s))\s*\d{1,2}:\d\d"
@@ -565,7 +568,7 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
     if kind == "owner":
-        stamp = QUOTED.sub(" ", ref)  # the time the owner decided, not a time inside their words
+        stamp = QUOTE_SPAN.sub(" ", ref)  # the time the owner decided, not a time inside their words
         if not (QUOTED.search(ref) and WHEN.search(stamp)):
             return "an owner proof needs the owner's quoted words and, outside them, the time"
         if ROUGH_TIME.search(stamp):
