@@ -40,7 +40,7 @@ In their first hour, properties like these found two real bugs and one dangerous
 
 ## Differential checks before a cutover
 
-Before replacing a service, run the same inputs through the old and the new one and compare. **Set the pass bar before you start**, so the result cannot argue you into it.
+Before replacing a service, run the same inputs through the old and the new one and compare. **Set the pass bar before you start**, so the result cannot argue you into it. [examples/differential.py](../examples/differential.py) takes the bar as an argument of the run and counts a call that fails as a failure, never a skip.
 
 | service | inputs | pass bar |
 |---|---|---|
