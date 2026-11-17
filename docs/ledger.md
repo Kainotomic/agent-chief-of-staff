@@ -45,6 +45,10 @@ Every open row is in exactly one queue, derived by a script from `owner` and the
 
 A worker-owned row whose later step needs the owner stays ACTIVE, and the brief still lists the owner's part. A row the owner holds with nothing in `waits on` is DECISION, never ACTIVE: no pass dispatches a worker onto the owner's own task, and the brief asks which it is (a choice, or hands-on).
 
+### "What's stuck?"
+
+When the owner asks what is stuck, group the open rows by the party they wait on: the owner, each teammate, outside parties, timers, and workers. Then give the owner a click list (approvals, sign-ins, console actions), ordered by how much each one unblocks, with a direct link on each line.
+
 ## Writes go through one function, under one lock
 
 ```

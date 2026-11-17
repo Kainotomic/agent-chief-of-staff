@@ -34,6 +34,12 @@ The goal is a coordinator that does almost everything itself and stops cleanly a
 - A hold ("hold", "don't touch", "wait for me") freezes that row or worker: no merge, deploy, archive, or timer action until a **fresh** go from the owner. An older or queued approval does not lift it.
 - Put the hold where the scripts can see it: the row's `waits on` (`HOLD: owner review`) and, for PRs, the PR title or body (`Draft: merge only after owner sign-off`).
 
+## Approving pull requests
+
+- **Agents never approve a PR**, their own or another agent's, and never use a shared or admin account to approve or merge one. That holds even when the owner's browser is signed in to that account and the owner asks.
+- Instead, give the owner the ordered list of what to approve, each with its link and what merging it does.
+- **Know what a merge does before asking anyone to approve it.** In an infrastructure repo a merge to the main branch can run `apply` against a live account; there, the infrastructure reviewer's review is the gate, not the green checks.
+
 ## Purchases: stop on the payment page
 
 Agents never complete a checkout or authorize a charge, even after the owner approves the spend.
@@ -55,6 +61,13 @@ Messages, emails, social posts, review replies, tracker comments on client-visib
 
 And the general rule: **no unrequested external items.** Workers never create tickets, issues, PRs, comments or messages unless the brief asks for that specific item.
 
+## Asking a teammate
+
+- **An ask goes on the related tracker ticket**, with a real structured mention of the person: the tracker's mention node carrying their account id. A plain-text name or a Markdown `@name` notifies nobody.
+- **Read the comment back** and confirm the mention carries the user id.
+- **Match the channel to the person.** When a teammate works mostly from email, also send one short email per pass that links each comment and gives one line per item.
+- **Workers don't send email.** A worker that posts an ask adds a line to its report, `NOTIFY-NEEDED <link>: <one line>`, and the coordinator sends it.
+
 ## Secrets
 
 | rule | detail |
@@ -70,6 +83,16 @@ And the general rule: **no unrequested external items.** Workers never create ti
 | Redaction hook | A post-tool hook in the agent runner that rewrites token-shaped output to `[REDACTED]` before the model sees it. It is a safety net, not a licence to print |
 | If one leaks | Stop. Say which secret and where, without repeating it. Rotate, then prove the old value is refused |
 | Read-only lanes | For read-only workers, a pre-tool hook that denies state-changing shell verbs and writes outside report directories |
+
+### Rotating a credential
+
+1. Create a second key alongside the old one. Store it, and read it back from the store. If the store's CLI can't parse a vault name (non-ASCII, say), read it back by vault id.
+2. Fail closed: if the store or the read-back fails, stop before touching any consumer.
+3. Verify the new key with a real authenticated call.
+4. Switch every consumer on every machine to the new key, and read each one back.
+5. Only then does the owner deactivate the old key. Delete it after a quiet period with no denials.
+
+Never print the key or any part of it at any step.
 
 ## Destructive operations
 

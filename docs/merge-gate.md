@@ -52,6 +52,8 @@ If your workers open PRs as drafts by default, a gate that "readies" drafts befo
 
 Match conservatively. "held at version 1.0" in a row's prose should not count; an uppercase `HOLD` token or a fixed phrase should. A conditional hold ("merge only after the migration is applied") stays held even after the condition is met, because the gate cannot evaluate conditions. The coordinator checks the condition and merges by hand with the expected-head guard.
 
+A PR whose title or body uses a hold word, even while only describing one (a PR about the hold rules, a body quoting "do not merge"), is held. That is deliberate: a false hold costs a manual merge, a false merge costs a bad merge. The coordinator merges such a PR by hand with the expected-head guard.
+
 ## Repos that deploy on merge
 
 Keep an explicit list of repos where a merge to the default branch ships to production (hosting platforms deploying from the main branch, CD pipelines, image builds that roll automatically). The gate **never** auto-merges these. It reports "ready"; the coordinator merges deliberately, then runs a live check of the deployed flow before the row is done, or holds for the owner if that deploy is a production cutover.

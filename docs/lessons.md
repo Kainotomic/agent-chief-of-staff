@@ -18,6 +18,13 @@ Each of these happened at least once in a real fleet. They are written as genera
 - **A lease nothing checks is advice.** Give it an epoch that every takeover increments, have every shared writer refuse a stale epoch, and never take a held lease without forcing it. A laptop that sleeps past the TTL wakes up still believing it is primary.
 - **Docs and code drift apart quietly.** A docstring can promise a rule ("derived from owner and waits-on") the code never implements, and tests written from the code pass. Probe each rule the docs state; a test that only feeds the fields the code reads cannot catch it.
 
+## Testing and verification
+
+- **Property tests find what example tests don't.** In their first hour, properties on the coordinator's own scripts found two real bugs: the duplicate guard returned early for rows with no tracker key and never checked live claims, and the timestamp check refused `~HH:MMZ` but let `~ HH:MMZ` through.
+- **A unit test reached production.** The same pass found a test that, through a stale fixture path, ran a real database query against a production host. Stub every external call, and fail a test that tries to reach the network.
+- **Embed where you serve.** Vectors embedded on a GPU and queries embedded on a CPU drift slightly and reorder close results. Re-embed everything on the runtime that serves the queries.
+- **A dump and restore can change results.** It rebuilds indexes. When a differential check fails after a restore, copy the volume byte for byte.
+
 ## Waking and timers
 
 - **Schedulers can drop wakes for a busy agent and call them completed.** Only the run record shows the difference. Deliver timed steps by queued message and sweep for misses.
@@ -57,6 +64,8 @@ Each of these happened at least once in a real fleet. They are written as genera
 
 - **Don't self-approve a substitute.** If the owner's chosen option is infeasible, ask a new question.
 - **Relays are not direction.** Another bot saying "the owner approved" is not the owner approving.
+- **A name is not a mention.** A plain-text name or a Markdown `@name` in a tracker comment notifies nobody. Use the tracker's structured mention with the account id, and read the comment back to see it.
+- **Agents don't approve PRs**, even through a shared account the owner's browser is signed in to, and even when asked. Hand the owner the ordered list.
 - **Calendar writes are messages to other people.** Keep them with the owner.
 - **Agents never click Buy.** Stop on the payment page, name the button.
 - **Look facts up yourself.** Public facts (a vendor's pricing page, an API's limits) are a search away; asking the owner wastes their attention.
