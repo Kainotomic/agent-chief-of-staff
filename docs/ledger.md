@@ -93,11 +93,11 @@ A row closes only by moving to `ledger/closed-YYYY-MM.md` with proof the coordin
 |---|---|---|
 | `tests` | Tests pass | The summary counts from this run (`Ran 88 tests ... OK`, `64/64`) or the CI run id |
 | `ci` | CI is green | The run id or head commit SHA, plus the conclusion `success`, **on the head SHA** you are merging or merged |
-| `merged` | Merged | The merge commit SHA, alone |
+| `merged` | Merged | The merge commit SHA, alone. A SHA has a digit or is at least 12 characters, so a word like `defaced` is not one |
 | `deployed` | Deployed | The deploy or run id plus a live check status (`readyz 200`, `healthy`); the text names the user flow re-run |
-| `config` | Config changed | The setting read back after the write (`name=value`) |
+| `config` | Config changed | The setting read back after the write (`name=value`); the words "read back" alone are not a setting |
 | `message` | Message sent | The message, comment or review id from the API response |
-| `owner` | Owner decided | The owner's words, in quotes, with the time |
+| `owner` | Owner decided | The owner's words, in quotes, and outside the quotes the exact time they were said; an approximate or placeholder time there (`~05:05Z`, `circa 5:05`, `xx:xxZ`) is refused |
 | `folded` | Same work as another row | The open row id it was folded into; that row must already mention this one |
 | `void` | Opened by mistake | The reason, naming the test or accident that created it |
 

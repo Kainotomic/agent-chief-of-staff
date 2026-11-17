@@ -50,7 +50,9 @@ NOT_PROOF_WORDS = {"verified", "ok", "okay", "done", "works", "work", "worked", 
                    "green", "passed", "passing", "pass", "success", "successful", "lgtm", "complete", "completed",
                    "fixed", "yes", "looks", "all", "it", "is", "the", "worker", "said", "says", "everything", "should",
                    "now", "tested", "and", "be"}
-SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+# A commit SHA: 7-40 hex with a digit, or 12+ hex letters. Shorter all-letter runs are English words (defaced,
+# deadbeef), so prose does not pass as a SHA; a real short SHA with no digit (about 1 in 1,000) needs more characters.
+SHA = re.compile(r"\b(?:(?=[a-f]*\d)[0-9a-f]{7,40}|[a-f]{12,40})\b")
 RUN_ID = re.compile(r"\b\d{6,}\b")
 COUNTS = re.compile(r"\bRan \d+\b|\b\d+\s*(?:tests?|passed|passing|failed|failures|errors|skipped)\b|\b\d+\s*/\s*\d+\b"
                     r"|\b\d+ OK\b|\bOK \(", re.I)
@@ -88,10 +90,16 @@ HTTP_STATUS = re.compile(r"(?<![\w.:/-])([1-5]\d\d)(?![\w./:-]|\s*(?:ms|s|sec|se
 PASS_RATIO = re.compile(r"(?<![\w.])(\d+)\s*/\s*(\d+)\s*(?:tests?|passed|passing|ok|green)\b", re.I)
 LIVE_STATUS = re.compile(r"(?<![\w.-])(?:[1-5]\d\d|healthy|success|passed|PASS)(?![\w-]|\.\w)")  # not inside an id
 ID_TOKEN = re.compile(r"(?<![\w.-])(?=[\w.-]*\d)[\w.-]{4,}(?![\w.-])")
-READ_BACK = re.compile(r"read[ -]?back|readback|\w\s*(?:==?|->|→)\s*\S", re.I)
+READ_BACK = re.compile(r"\w\s*(?:==?|->|→)\s*\S")  # the setting as read back: name=value, not the words "read back"
 MESSAGE_ID = re.compile(r"\d{4,}")
 QUOTED = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
+# The owner's words as one span: each opening quote matched to its own closing one, and an apostrophe followed by a
+# letter (don't, don’t) stays inside the words.
+QUOTE_SPAN = re.compile(r"\"[^\"]*\"|“[^”]*”|‘(?:[^’]|’(?=\w))*’(?!\w)|(?<!\w)'(?:[^']|'(?=\w))*'(?!\w)")
 WHEN = re.compile(r"\b\d{1,2}:\d\d(?!\d)")  # a time of day, not a bare date
+# An approximate (~05:05Z, circa 5:05) or placeholder (xx:xxZ, 05:xx, HH:MM) time: not the minute from the clock.
+ROUGH_TIME = re.compile(r"(?:[~≈∼]|\b(?:about|approx(?:imately|\.)?|around|circa|ca\.|roughly)(?=\s))\s*\d{1,2}:\d\d"
+                        r"|(?<![\w:])(?:[xh?_-]{1,2}:[\dxm?_-]{2}|\d{1,2}:(?:[xm?_-][\dxm?_-]|\d[xm?_-]))", re.I)
 VOID_REASON = re.compile(r"\b(?:tests?|testing|fixture|accident\w*|mistake\w*|in error|by error|typo|stray|created by)\b",
                          re.I)
 PROOF_CELL = re.compile(r"^(?P<kind>[a-z]+): (?P<ref>.+?) - (?P<text>.+)$")
@@ -523,11 +531,11 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
 
     tests    counts ("Ran 88 tests ... OK", "64/64") or a CI run id
     ci       a run id or head SHA plus the conclusion "success"
-    merged   the merge commit SHA, alone
+    merged   the merge commit SHA, alone (with a digit, or 12+ characters)
     deployed a deploy or run id plus a live check status ("readyz 200", "healthy")
-    config   the setting read back ("autoDeploy=false", "read back ...")
+    config   the setting read back as name=value ("autoDeploy=false read back")
     message  the message, comment or review id
-    owner    the owner's words in quotes, with the time
+    owner    the owner's words in quotes, with the exact time (not ~05:05Z or xx:xxZ)
     folded   the open row id it was folded into (that row must mention this one; close_row checks)
     void     for a test or accidental row; the reason says which
 
@@ -550,8 +558,8 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
         return "a tests proof needs the counts or a run id, not prose"
     if kind == "ci" and not ((RUN_ID.search(ref) or SHA.search(ref)) and CI_SUCCESS.search(ref)):
         return "a ci proof needs a run id or head SHA plus the conclusion (success)"
-    if kind == "merged" and not re.fullmatch(r"[0-9a-f]{7,40}", ref):
-        return "a merged proof is the merge commit SHA"
+    if kind == "merged" and not SHA.fullmatch(ref):
+        return "a merged proof is the merge commit SHA (with a digit, or 12+ characters)"
     if kind == "deployed":
         if not any(ID_TOKEN.search(ref[:m.start()] + " " + ref[m.end():]) for m in LIVE_STATUS.finditer(ref)):
             return "a deployed proof needs a deploy or run id plus a live check status"
@@ -559,8 +567,12 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
         return "a config proof needs the setting read back (name=value)"
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
-    if kind == "owner" and not (QUOTED.search(ref) and WHEN.search(ref)):
-        return "an owner proof needs the owner's quoted words and the time"
+    if kind == "owner":
+        stamp = QUOTE_SPAN.sub(" ", ref)  # the time the owner decided, not a time inside their words
+        if not (QUOTED.search(ref) and WHEN.search(stamp)):
+            return "an owner proof needs the owner's quoted words and, outside them, the time"
+        if ROUGH_TIME.search(stamp):
+            return f"an owner proof needs the exact minute from the clock, not {ROUGH_TIME.search(stamp).group(0)!r}"
     if kind == "folded" and not ROW_ID.match(ref):
         return "a folded proof's ref is the open row id it was folded into"
     if kind == "void" and not VOID_REASON.search(f"{ref} {text}"):

@@ -187,7 +187,7 @@ class HostNameMatching(Temp):
         ledger = ls.Ledger(self.root, can_close=ls.pr_merge_policy(lookup))
         row = ledger.write_row(None, next="Merge https://GITHUB.COM/org/app/pull/42 then close")
         with self.assertRaises(ls.CloseRefused):
-            ledger.close_row(row["id"], "merged", "deadbeef", "merged", now=T0)
+            ledger.close_row(row["id"], "merged", "dead0beef", "merged", now=T0)
         self.assertEqual(seen, [("org/app", 42)])
         ledger.close_row(row["id"], "merged", "89f09d6", "merged", now=T0)
 
