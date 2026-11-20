@@ -340,6 +340,23 @@ class ReviewedDefects(unittest.TestCase):
         text = "[ready][<!--] WIP -->\n\n[<!--]: /url"
         self.assertNotIn("WIP", mg.rendered(text))
 
+    def test_a_line_that_only_starts_like_a_definition_is_prose(self):
+        # Codex on #44: "[note]: do **not** merge" is no reference definition, so its emphasis renders and it holds
+        text = "[note]: do **not** merge"
+        self.assertEqual(mg.rendered(text), "[note]: do not merge")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        pr = _pr("ready")
+        pr.reviews[:] = [mg.Review(HEAD, "[note]: P**3**: loss\nverdict: clean")]
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(mg.rendered('[x]: https://u "t"\n\n[x]'), '[x]: https://u "t"\n\nx')
+        self.assertEqual(mg.rendered("[x]: <u> 't' extra"), "[x]: 't' extra")
+
+    def test_an_autolink_in_a_label_does_not_stop_the_link(self):
+        # Codex on #44 suggested an autolink makes the outer brackets literal; CommonMark (markdown-it-py 4.0.0)
+        # still forms the outer link, so its destination stays hidden
+        text = "[outer <https://ci.test> `build`](WIP)"
+        self.assertEqual(md.render(text), "outer https://ci.test build")
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")

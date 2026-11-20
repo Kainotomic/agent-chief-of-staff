@@ -25,8 +25,11 @@ PR_HOLD = re.compile(r"(?i)\bdraft:|\bdraft until\b|\bmerge only after\b|\bdo no
 # Inline Markdown is one CommonMark inline pass in md_inline.py (#36); only block structure lives here.
 # A fence delimiter is indented at most 3 spaces (CommonMark): a "    ```" line inside a fence does not close it (#31).
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-# A link reference definition line, collected from prose only: one inside a code block defines nothing.
-MD_REF_DEF = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*\S")
+# A link reference definition line, collected from prose only: one inside a code block defines nothing. The whole
+# line must parse (a destination, then at most a quoted or parenthesised title): "[note]: do **not** merge" is no
+# definition, so it renders as the prose it is (Codex on #44).
+MD_REF_DEF = re.compile(r"^ {0,3}\[([^\]]+)\]:[ \t]*(?:<[^<>\n]*>|[^\s<]\S*)"
+                        r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^()]*\)))?[ \t]*$")
 # An indented code line (4 spaces or a tab) is an example, like a fenced block (#28).
 INDENTED = re.compile(r"^(?: {4,}|\t)")
 # "Findings: None" (or a Findings heading over "None") says the list is empty (#28).
