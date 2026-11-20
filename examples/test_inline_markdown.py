@@ -300,6 +300,20 @@ class ReviewedDefects(unittest.TestCase):
         self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
         self.assertEqual(md.render('[a <span title="]">b</span>](https://x.test/WIP)'), "a b")
 
+    def test_a_comment_may_span_lines_and_hold_a_gt(self):
+        # Codex on #44: a PR template's multi-line comment, or one holding ">", is a comment and renders as nothing
+        for text in ["<!--\nWIP\n-->", "<!-- status > WIP -->", "Summary\n<!--\nDo not merge before QA.\n-->\nDone"]:
+            with self.subTest(text=text):
+                self.assertNotIn("wip", mg.rendered(text).lower())
+                self.assertNotIn("merge", mg.rendered(text).lower())
+                self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+    def test_a_link_title_is_consumed_before_raw_html(self):
+        # Codex on #44: "<!--" inside a title was skipped to the "-->" after the next link, hiding its brackets
+        text = '[a](u "<!--")[b](WIP)-->'
+        self.assertEqual(md.render(text), "ab-->")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")

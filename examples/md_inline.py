@@ -103,6 +103,7 @@ class _Scan:
             i = j
         # Brackets are paired in prose *outside code spans*: a "]" inside backticks is literal content, so it must
         # not close a "[" before them (a mis-pairing both hides and invents words).
+        self._destinations: tuple[list[int], dict[int, list[int]], list[int], dict[str, list[int]]] | None = None
         self.match: dict[int, int] = {}
         stack: list[int] = []
         i = 0
@@ -138,8 +139,14 @@ class _Scan:
                 stack.append(i)
             elif c == "]" and stack:
                 self.match[stack.pop()] = i
+                # A link's destination and title are consumed with it, as render_inline consumes them: HTML-like
+                # text inside a title (`[a](u "<!--")`) must not hide the brackets of the links after it.
+                if i + 1 < len(text) and text[i + 1] == "(":
+                    end = _destination(text, i + 2, self)
+                    if end is not None:
+                        i = end
+                        continue
             i += 1
-        self._destinations: tuple[list[int], dict[int, list[int]], list[int], dict[str, list[int]]] | None = None
 
     def first_run_at_least(self, length: int, start: int) -> int | None:
         positions = self.runs.get(length)
@@ -157,7 +164,7 @@ class _Scan:
         if k is None:
             return None
         body = self.text[j:k]
-        if "\n" in body or "--" in body or ">" in body or body.endswith("-"):
+        if "--" in body or body.endswith("-"):
             return None
         return k + 3
 
