@@ -333,6 +333,13 @@ class ReviewedDefects(unittest.TestCase):
         self.assertIn("WIP", mg.rendered(text))
         self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
 
+    def test_a_comment_opened_inside_a_reference_label_is_still_a_comment(self):
+        # Codex on #44 suggested the label is consumed first; CommonMark (markdown-it-py 4.0.0) reads raw HTML first,
+        # so "<!--] WIP -->" is a comment and only "[ready][" is visible, with or without a "[<!--]" definition
+        self.assertEqual(md.render("[ready][<!--] WIP -->"), "[ready][")
+        text = "[ready][<!--] WIP -->\n\n[<!--]: /url"
+        self.assertNotIn("WIP", mg.rendered(text))
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")
