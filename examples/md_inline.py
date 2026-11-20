@@ -120,10 +120,19 @@ class _Scan:
                     i += 1
                 continue
             if c == "<":
-                # An autolink binds tighter than link brackets: a "]" inside one cannot close an outside "[".
-                auto = AUTOLINK_URI.match(text, i + 1) or AUTOLINK_EMAIL.match(text, i + 1)
-                if auto and auto.end() < len(text) and text[auto.end()] == ">":
-                    i = auto.end() + 1
+                # Raw HTML and autolinks bind tighter than link brackets: a "[" or "]" inside a comment, tag or
+                # autolink cannot pair with one outside it (render_inline skips the same constructs).
+                end = self.comment_end(i) if text.startswith("<!--", i) else None
+                end = end or self.html_construct_end(i)
+                if end is None:
+                    tag = OPEN_TAG.match(text, i) or CLOSE_TAG.match(text, i)
+                    end = tag.end() if tag else None
+                if end is None:
+                    auto = AUTOLINK_URI.match(text, i + 1) or AUTOLINK_EMAIL.match(text, i + 1)
+                    if auto and auto.end() < len(text) and text[auto.end()] == ">":
+                        end = auto.end() + 1
+                if end is not None:
+                    i = end
                     continue
             if c == "[":
                 stack.append(i)
@@ -188,7 +197,7 @@ class _Scan:
             level = [0] * (n + 1)
             closes: dict[int, list[int]] = {}
             stops: list[int] = []
-            closers: dict[str, list[int]] = {'"': [], "'": [], ")": []}
+            closers: dict[str, list[int]] = {'"': [], "'": [], "(": [], ")": []}
             depth = i = 0
             while i < n:
                 level[i] = depth
@@ -227,7 +236,7 @@ class _Scan:
         return stop if level[stop] == level[i] else None
 
     def next_closer(self, closer: str, i: int) -> int | None:
-        """The first unescaped `closer` (a quote or ")") at or after `i`."""
+        """The first unescaped `closer` (a quote or a parenthesis) at or after `i`."""
         positions = self._destination_index()[3][closer]
         k = bisect.bisect_left(positions, i)
         return positions[k] if k < len(positions) else None
@@ -286,6 +295,8 @@ def _destination(text: str, i: int, scan: "_Scan") -> int | None:
         k = scan.next_closer(")" if text[j] == "(" else text[j], j + 1)
         if k is None:
             return None
+        if text[j] == "(" and (inner := scan.next_closer("(", j + 1)) is not None and inner < k:
+            return None  # a parenthesised title may not hold an unescaped "(": `(a (do not merge))` stays visible
         j = _skip_ws(text, k + 1)
     if j < n and text[j] == ")":
         return j + 1
@@ -294,6 +305,14 @@ def _destination(text: str, i: int, scan: "_Scan") -> int | None:
     # whitespace before the closing paren is allowed: "[a](b )"
     k = _skip_ws(text, i)
     return k + 1 if k < n and text[k] == ")" else None
+
+
+def _escaped(text: str, i: int) -> bool:
+    """Whether the character at `i` follows an odd run of backslashes."""
+    k = i
+    while k > 0 and text[k - 1] == "\\":
+        k -= 1
+    return (i - k) % 2 == 1
 
 
 def _skip_ws(text: str, i: int) -> int:
@@ -342,8 +361,8 @@ def _contains_link(label: str, defined: frozenset, depth: int) -> bool:
     """Whether a label holds another link (which would make the outer one literal, per the spec's nested-link rule)."""
     sub = _Scan(label)
     for start in sorted(sub.match):
-        if start > 0 and label[start - 1] == "!":
-            continue  # an image may sit inside a link label
+        if start > 0 and label[start - 1] == "!" and not _escaped(label, start - 1):
+            continue  # an image may sit inside a link label; an escaped "\\!" opens no image
         after = sub.match[start] + 1
         if after < len(label) and label[after] == "(" and _destination(label, after + 1, sub) is not None:
             return True

@@ -279,6 +279,27 @@ class ReviewedDefects(unittest.TestCase):
         self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
         self.assertEqual(md.render(r"[a](u\)v)"), "a")
 
+    def test_a_parenthesised_title_may_not_hold_an_open_paren(self):
+        # Codex on #44: the title took the first ")" even past another "(", so a malformed link hid its words
+        text = "[ready](url (approval (do not merge))"
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render(r"[ready](url (approval \(x\)))"), "ready")
+
+    def test_an_escaped_bang_opens_no_image_inside_a_label(self):
+        # Codex on #44: "\![inner](u)" is a link, not an image, so the outer brackets are literal and (WIP) shows
+        text = r"[outer \![inner](u)](WIP)"
+        self.assertEqual(md.render(text), "[outer !inner](WIP)")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render("[a ![i](u)](WIP)"), "a i")
+
+    def test_brackets_inside_raw_html_are_not_delimiters(self):
+        # Codex on #44: the "[" inside a comment paired with the label's "]", leaving a hidden URL visible
+        text = "[build <!-- [ -->status](https://ci.test/WIP)"
+        self.assertEqual(md.render(text), "build status")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+        self.assertEqual(md.render('[a <span title="]">b</span>](https://x.test/WIP)'), "a b")
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")
