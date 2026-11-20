@@ -49,7 +49,7 @@ BLOCK_TAG = re.compile(r"(?:address|article|aside|blockquote|br|caption|dd|detai
 ENTITY = re.compile(r"&(?:#[0-9]{1,7}|#[xX][0-9A-Fa-f]{1,6}|[A-Za-z][A-Za-z0-9]{1,31});")
 EMPHASIS = set("*_~")
 # CommonMark inline nesting is bounded in practice; a crafted body of thousands of nested labels must not make the
-# gate quadratic. Beyond this depth the marks are dropped (fail-closed: the words still show).
+# gate quadratic. Beyond this depth brackets are literal (fail-closed: the words and destinations still show).
 MAX_DEPTH = 24
 # A link label longer than this is not link syntax in any practical sense, and rendering thousands of long labels is
 # what makes a crafted body quadratic. Beyond it the brackets are literal text (the words still show).
@@ -83,7 +83,7 @@ class _Scan:
     """Per-string lookup tables, so neither an unmatched bracket nor a long run of ticks can make rendering
     quadratic: a PR body is attacker-controlled text and the gate must not be stallable (found by fuzzing)."""
 
-    def __init__(self, text: str):
+    def __init__(self, text: str, defined: frozenset = frozenset()):
         self.text = text
         # The last "-->" in the text: a comment candidate with no closer after it is rejected in O(1) instead of
         # rescanning to the end (a body of 20,000 "<!--" must not be quadratic).
@@ -106,6 +106,9 @@ class _Scan:
         self._destinations: tuple[list[int], dict[int, list[int]], list[int], dict[str, list[int]]] | None = None
         self.match: dict[int, int] = {}
         stack: list[int] = []
+        # Openers below this stack index sit around a link already formed, so they cannot form one (links do not
+        # nest) and their destinations are not consumed here: render_inline shows those as prose.
+        inactive_below = 0
         i = 0
         while i < len(text):
             c = text[i]
@@ -138,14 +141,22 @@ class _Scan:
             if c == "[":
                 stack.append(i)
             elif c == "]" and stack:
-                self.match[stack.pop()] = i
+                opener = stack.pop()
+                self.match[opener] = i
+                active = len(stack) >= inactive_below and i - opener <= MAX_LABEL
+                inactive_below = min(inactive_below, len(stack))
+                image = opener > 0 and text[opener - 1] == "!" and not _escaped(text, opener - 1)
                 # A link's destination and title are consumed with it, as render_inline consumes them: HTML-like
                 # text inside a title (`[a](u "<!--")`) must not hide the brackets of the links after it.
-                if i + 1 < len(text) and text[i + 1] == "(":
+                if active and i + 1 < len(text) and text[i + 1] == "(":
                     end = _destination(text, i + 2, self)
                     if end is not None:
+                        if not image:
+                            inactive_below = len(stack)
                         i = end
                         continue
+                if active and not image and ref_label(text[opener + 1:i]) in defined:
+                    inactive_below = len(stack)
             i += 1
 
     def first_run_at_least(self, length: int, start: int) -> int | None:
@@ -366,7 +377,7 @@ def _scan_link_or_image(text: str, bracket: int, defined: frozenset, out: list[s
 
 def _contains_link(label: str, defined: frozenset, depth: int) -> bool:
     """Whether a label holds another link (which would make the outer one literal, per the spec's nested-link rule)."""
-    sub = _Scan(label)
+    sub = _Scan(label, defined)
     for start in sorted(sub.match):
         if start > 0 and label[start - 1] == "!" and not _escaped(label, start - 1):
             continue  # an image may sit inside a link label; an escaped "\\!" opens no image
@@ -382,10 +393,11 @@ def render_inline(text: str, defined: frozenset = frozenset(), depth: int = 0) -
     """The visible words of one block of inline Markdown. Emphasis marks are dropped, so `do **not** merge` reads
     `do not merge`; an escaped mark is dropped too (`do \\*not\\* merge` still reads as a hold, the fail-closed #35
     choice); code span contents are kept literal; link and image labels stay and destinations go."""
-    if depth >= MAX_DEPTH:
-        return re.sub(r"[*_~`]", "", text)
+    # Past the nesting limit, brackets are read as written: the label's words, entities and tags still render, and
+    # its destinations stay visible (fail-closed), rather than returning the label unrendered.
+    links = depth < MAX_DEPTH
     out: list[str] = []
-    scan = _Scan(text)
+    scan = _Scan(text, defined)
     i, n = 0, len(text)
     while i < n:
         c = text[i]
@@ -441,7 +453,7 @@ def render_inline(text: str, defined: frozenset = frozenset(), depth: int = 0) -
             i += 1
             continue
         if c == "!" and i + 1 < n and text[i + 1] == "[":
-            if i + 1 in scan.match:
+            if links and i + 1 in scan.match:
                 consumed = _scan_link_or_image(text, i + 1, defined, out, scan, depth)
                 if consumed is not None:
                     i = consumed
@@ -450,7 +462,7 @@ def render_inline(text: str, defined: frozenset = frozenset(), depth: int = 0) -
             i += 1
             continue
         if c == "[":
-            if i in scan.match:
+            if links and i in scan.match:
                 consumed = _scan_link_or_image(text, i, defined, out, scan, depth)
                 if consumed is not None:
                     i = consumed

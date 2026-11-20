@@ -314,6 +314,25 @@ class ReviewedDefects(unittest.TestCase):
         self.assertEqual(md.render(text), "ab-->")
         self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
 
+    def test_a_rejected_outer_link_leaves_its_destination_to_be_parsed(self):
+        # Codex on #44: the outer link holds a link, so it is literal and "[logs](...)" is a link of its own
+        text = "[see [CI](url)]([logs](https://ci.test/WIP))"
+        self.assertEqual(md.render(text), "[see CI](logs)")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+        self.assertEqual(md.render("[see [CI]]([logs](https://ci.test/WIP))", frozenset({"ci"})), "[see CI](logs)")
+
+    def test_an_omitted_destination_does_not_make_a_title(self):
+        # Codex on #44 suggested this was a link with a title; CommonMark (markdown-it-py 4.0.0) renders it as text
+        text = '[ready]( "do not merge")'
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_past_the_nesting_limit_words_still_render(self):
+        # Codex on #44: past MAX_DEPTH the label came back unrendered, so "&#87;IP" hid a visible WIP
+        text = "![" * md.MAX_DEPTH + "&#87;IP" + "](u)" * md.MAX_DEPTH
+        self.assertIn("WIP", mg.rendered(text))
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")
