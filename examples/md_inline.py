@@ -130,6 +130,7 @@ class _Scan:
             elif c == "]" and stack:
                 self.match[stack.pop()] = i
             i += 1
+        self._destinations: tuple[list[int], dict[int, list[int]], list[int], dict[str, list[int]]] | None = None
 
     def first_run_at_least(self, length: int, start: int) -> int | None:
         positions = self.runs.get(length)
@@ -178,6 +179,59 @@ class _Scan:
         k = bisect.bisect_left(closers, j)
         return closers[k] + width if k < len(closers) else None
 
+    def _destination_index(self) -> tuple[list[int], dict[int, list[int]], list[int], dict[str, list[int]]]:
+        """Built once, on the first link destination: the parenthesis level before each index, the unescaped ")" by
+        the level they close, the characters that end a bare destination, and the title closers. A destination start
+        always follows "](", so it sits on a boundary of this one escape-aware pass, and the pass applies from it."""
+        if self._destinations is None:
+            text, n = self.text, len(self.text)
+            level = [0] * (n + 1)
+            closes: dict[int, list[int]] = {}
+            stops: list[int] = []
+            closers: dict[str, list[int]] = {'"': [], "'": [], ")": []}
+            depth = i = 0
+            while i < n:
+                level[i] = depth
+                c = text[i]
+                if c == "\\" and i + 1 < n and text[i + 1] in ESCAPABLE:
+                    level[i + 1] = depth
+                    i += 2
+                    continue
+                if c in closers:
+                    closers[c].append(i)
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    closes.setdefault(depth, []).append(i)
+                    depth -= 1
+                elif c in " \t\n" or ord(c) < 0x20:
+                    stops.append(i)
+                i += 1
+            level[n] = depth
+            self._destinations = (level, closes, stops, closers)
+        return self._destinations
+
+    def bare_destination_end(self, i: int) -> int | None:
+        """Where a bare destination starting at `i` ends: at its first unbalanced ")" or at whitespace with its
+        parentheses balanced; None at a control character or with a parenthesis left open. Looked up, not scanned,
+        so a body of thousands of "[a](" does not rescan the rest of the text for each one (review of #37)."""
+        level, closes, stops, _ = self._destination_index()
+        k = bisect.bisect_left(stops, i)
+        stop = stops[k] if k < len(stops) else len(self.text)
+        same = closes.get(level[i], [])
+        k = bisect.bisect_left(same, i)
+        if k < len(same) and same[k] < stop:
+            return same[k]
+        if stop < len(self.text) and self.text[stop] not in " \t\n":
+            return None
+        return stop if level[stop] == level[i] else None
+
+    def next_closer(self, closer: str, i: int) -> int | None:
+        """The first unescaped `closer` (a quote or ")") at or after `i`."""
+        positions = self._destination_index()[3][closer]
+        k = bisect.bisect_left(positions, i)
+        return positions[k] if k < len(positions) else None
+
     def code_span_end(self, i: int) -> int | None:
         """The index just past a code span that opens at `i`, or None when this run has no matching closer."""
         j = i
@@ -202,42 +256,35 @@ def _code_span(text: str, i: int, scan: "_Scan") -> tuple[str, int] | None:
     return content.replace("\n", " "), end
 
 
-def _destination(text: str, i: int) -> int | None:
+def _destination(text: str, i: int, scan: "_Scan") -> int | None:
     """The end of an inline link destination starting at `i` (just after the '('), or None. Per the spec a bare
-    destination may contain balanced parentheses -- `u(a(bug))` is a destination, not visible words."""
+    destination may contain balanced parentheses -- `u(a(bug))` is a destination, not visible words -- and an
+    angle-bracketed one may not contain an unescaped "<" or a line ending: `[a](<x< WIP>)` is not a link, so its
+    words stay visible."""
     n = len(text)
     i = _skip_ws(text, i)
     if i < n and text[i] == "<":
-        j = text.find(">", i + 1)
-        if j == -1 or "\n" in text[i:j]:
-            return None
-        i = j + 1
-    else:
-        depth = 0
-        while i < n:
-            c = text[i]
-            if c == "\\" and i + 1 < n:
+        i += 1
+        while i < n and text[i] != ">":
+            if text[i] == "\\" and i + 1 < n and text[i + 1] in ESCAPABLE:
                 i += 2
                 continue
-            if c in " \t\n":
-                break
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                if depth == 0:
-                    break
-                depth -= 1
-            elif ord(c) < 0x20:
+            if text[i] in "<\n\r":
                 return None
             i += 1
-        if depth:
+        if i >= n:
             return None
+        i += 1
+    else:
+        end = scan.bare_destination_end(i)
+        if end is None:
+            return None
+        i = end
     # an optional title, then the closing paren
     j = _skip_ws(text, i)
     if j < n and j > i and text[j] in "\"'(":
-        closer = ")" if text[j] == "(" else text[j]
-        k = text.find(closer, j + 1)
-        if k == -1:
+        k = scan.next_closer(")" if text[j] == "(" else text[j], j + 1)
+        if k is None:
             return None
         j = _skip_ws(text, k + 1)
     if j < n and text[j] == ")":
@@ -266,7 +313,7 @@ def _scan_link_or_image(text: str, bracket: int, defined: frozenset, out: list[s
     after = close + 1
     # inline link: `(` must follow the label *immediately* (cmark: "[a] (x)" is not a link)
     if after < len(text) and text[after] == "(":
-        end = _destination(text, after + 1)
+        end = _destination(text, after + 1, scan)
         if end is not None:
             if _contains_link(label, defined, depth):
                 return None  # links may not contain links: the outer bracket is literal, the inner one wins
@@ -298,7 +345,7 @@ def _contains_link(label: str, defined: frozenset, depth: int) -> bool:
         if start > 0 and label[start - 1] == "!":
             continue  # an image may sit inside a link label
         after = sub.match[start] + 1
-        if after < len(label) and label[after] == "(" and _destination(label, after + 1) is not None:
+        if after < len(label) and label[after] == "(" and _destination(label, after + 1, sub) is not None:
             return True
         if ref_label(label[start + 1:sub.match[start]]) in defined:
             return True
@@ -324,8 +371,8 @@ def render_inline(text: str, defined: frozenset = frozenset(), depth: int = 0) -
             if i + 1 < n and text[i + 1] in ESCAPABLE:
                 # An escaped character shows as itself, so `\<WIP>` displays `<WIP>` and `\`` is a literal backtick
                 # (which is what stops it pairing with a real code-span opener). Escaped emphasis marks are the one
-                # deliberate exception kept from #35: they are dropped, because joining the words can only reveal a
-                # hold ("do \*not\* merge" still reads as "do not merge"), never hide one.
+                # deliberate exception kept from #35: they are dropped, so "do \*not\* merge" still reads as a hold.
+                # The cost is that joining can glue words: "status\*WIP" reads "statusWIP", which no longer holds.
                 if text[i + 1] not in EMPHASIS:
                     out.append(text[i + 1])
                 i += 2

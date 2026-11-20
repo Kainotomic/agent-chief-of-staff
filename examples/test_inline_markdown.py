@@ -27,8 +27,8 @@ class InlineSpecCases(unittest.TestCase):
         (r"\!\"\#\$\%\&\'\(\)\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\`\{\|\}",
          "!\"#$%&'()+,-./:;<=>?@[\\]^`{|}", {}),
         (r"escaped \_ \* \~ marks vanish", "escaped marks vanish", {}),
-        # Documented deviation from the spec, kept from #35: escaped emphasis marks are dropped, not shown, because
-        # joining words can only reveal a hold. `\*` `\_` `\~` therefore vanish (see GateReadsTheVisibleWords).
+        # Documented deviation from the spec, kept from #35: escaped emphasis marks are dropped, not shown, so a
+        # spaced hold still reads as one. `\*` `\_` `\~` therefore vanish (see GateReadsTheVisibleWords).
         (r"escaped \*stars\* and \_underscores\_ and \~tildes\~", "escaped stars and underscores and tildes", {}),
         ("foo\\\nbar", "foo\nbar", {}),
         # code spans: contents are literal, backtick runs match by length
@@ -129,10 +129,6 @@ class EscapedBacktickRegression(unittest.TestCase):
         self.assertEqual(md.render(r"\`a\` `b`"), "`a` b")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ParserRobustness(unittest.TestCase):
     """A PR body and a review receipt are attacker-controlled text: rendering must be total and near-linear.
     Found by fuzzing this parser after it replaced the regexes (#36)."""
@@ -159,15 +155,38 @@ class ParserRobustness(unittest.TestCase):
             mg.rendered(text)
             self.assertLess(time.monotonic() - start, 2.0, f"{len(text)} chars took too long")
 
+    def assert_linear(self, unit: str):
+        """Rendering `unit` repeated to 64 KiB costs about 4x what 16 KiB does; a rescan per opener costs 16x. The
+        ratio, not a wall-clock bound, is what holds on a loaded host; the 2 s ceiling still catches a stall."""
+        import time
+
+        def fastest(text):
+            samples = []
+            for _ in range(3):
+                start = time.perf_counter()
+                self.assertIsInstance(mg.rendered(text), str)
+                samples.append(time.perf_counter() - start)
+            return min(samples)
+
+        small = fastest((unit * 16384)[:16384])
+        large = fastest((unit * 65536)[:65536])
+        self.assertLess(large, 2.0, f"{unit!r} over 64 KiB took {large:.2f} s")
+        self.assertLess(large / small, 8, f"{unit!r}: 16 to 64 KiB went from {small:.3f} s to {large:.3f} s")
+
     def test_unclosed_html_constructs_stay_linear(self):
         # review of #37: "<?" rescanned to the end of the body for every opener (64 KiB took 3 s), and "<!a" and
         # "<![CDATA[" did the same at a smaller constant. Their closers are now indexed once, like comments.
-        import time
         for unit in ["<? ", "<!a ", "<![CDATA[ "]:
-            text = unit * (65536 // len(unit))
-            start = time.monotonic()
-            self.assertIsInstance(mg.rendered(text), str)
-            self.assertLess(time.monotonic() - start, 0.25, f"{unit!r} x {len(text) // len(unit)} took too long")
+            with self.subTest(unit=unit):
+                self.assert_linear(unit)
+
+    def test_incomplete_destinations_stay_linear(self):
+        # review of #37: every "[a]" followed by "(" rescanned the rest of the body for its destination's closing
+        # paren, so 64 KiB of "[a](" took 24 s; an open "(" title did the same. Destinations are now looked up in
+        # an index built once.
+        for unit in ["[a](", "[a](<", "[a](b ("]:
+            with self.subTest(unit=unit):
+                self.assert_linear(unit)
 
     def test_closed_html_constructs_still_render_as_nothing(self):
         self.assertEqual(md.render("a<?php echo 1; ?>b"), "ab")
@@ -228,6 +247,38 @@ class ReviewedDefects(unittest.TestCase):
         self.assertEqual(md.render("[see](u(a(bug)))"), "see")
         self.assertEqual(md.render("[the run](https://ex.test/p3(x))"), "the run")
 
+    def test_an_angle_destination_may_not_contain_a_bare_lt(self):
+        # regression in the first #37 head: "<" ... ">" took the first ">" and allowed another "<" inside, so the
+        # words of a malformed destination vanished as a hidden URL. CommonMark leaves the whole thing visible.
+        for text in ["[ready](<https://x.test/< do not merge>)", "[ready](<x< WIP>)"]:
+            with self.subTest(text=text):
+                self.assertEqual(md.render(text), text)
+                self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        receipt = "[ready](<x< P3: loss>)\nverdict: clean"
+        self.assertIn("P3: loss", mg.rendered(receipt))
+        pr = _pr("ready")
+        pr.reviews[:] = [mg.Review(HEAD, receipt)]
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_an_escaped_gt_stays_inside_an_angle_destination(self):
+        # the conservative half of the same review: "\>" does not close the destination, so this is a valid link
+        # whose URL holds "do not merge", and only "ready" is visible.
+        text = r"[ready](<https://x.test/\> do not merge>)"
+        self.assertEqual(md.render(text), "ready")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+    def test_a_raw_tag_after_a_failed_angle_destination_still_renders_as_nothing(self):
+        # "<WIP>" closes nothing: the link fails at its "<", and the tag is then dropped as raw HTML
+        self.assertEqual(md.render("[ready](<https://x.test/<WIP>)"), "[ready](<https://x.test/)")
+
+    def test_a_backslash_escapes_only_punctuation_in_a_bare_destination(self):
+        # "\ " is a literal backslash and then a space, which ends the destination; "WIP)" is no title, so this
+        # is not a link and WIP stays visible. Skipping any character after a backslash hid it.
+        text = r"[a](b\ WIP)"
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render(r"[a](u\)v)"), "a")
+
     def test_a_declaration_needs_no_space_after_its_name(self):
         # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
         self.assertEqual(md.render("<!bug> shipped"), " shipped")
@@ -253,3 +304,6 @@ class NotTheRegexesAgain(unittest.TestCase):
                                ("[a](u(a))", "a"), (r"[a](u\(a\))", "a"), ("[a][b]", "a")]:
             with self.subTest(text=text):
                 self.assertEqual(md.render(text, frozenset({"b"})), expected)
+
+if __name__ == "__main__":
+    unittest.main()
