@@ -163,14 +163,6 @@ class ProseIsNotProof(unittest.TestCase):
 class FoundByTheProperties(TempDir):
     """The gaps the properties above found in this repo, as named cases."""
 
-    LEGACY_OWNER_REFS = (
-        '"ship it" 2026-01-16 14:02 EST',
-        '"ship it" 2026-01-16 14:02:30Z',
-        '"go" at 14:02Z',
-        'Andrew: "ship it" 14:02Z',
-        '"ship it" (14:02Z)',
-    )
-
     def test_a_word_made_of_hex_letters_is_not_a_sha(self):
         for word in ("defaced", "acceded", "deadbeef", "effaced"):
             self.assertIsNotNone(ls.proof_problem("merged", word, "merged the PR"), word)
@@ -180,16 +172,6 @@ class FoundByTheProperties(TempDir):
         for sha in ("89f09d6", "89f09d6c0ffee1234567890abcdef1234567890", "a" * 40, "abcdefabcdef"):
             self.assertIsNone(ls.proof_problem("merged", sha, "merged the PR"), sha)
             self.assertIsNone(ls.proof_problem("ci", f"{sha} success", "checks on the head"), sha)
-
-    def test_an_existing_archive_accepts_short_letter_only_shas(self):
-        archive = self.root / "ledger" / "closed-2026-01.md"
-        archive.parent.mkdir()
-        archive.write_text(
-            "| id | key | closed | proof | last next action |\n|---|---|---|---|---|\n"
-            "| R-001 | — | 2026-01-16 14:00Z | merged: fcaabad - merged the PR | Merge acme/widgets#16 |\n"
-            "| R-002 | — | 2026-01-16 14:00Z | ci: fcaabad success - checked the PR | Check acme/widgets#16 |\n"
-        )
-        self.assertEqual(ls.Ledger(self.root).check(), ([], []))
 
     def test_a_trusted_merge_lookup_can_verify_a_short_letter_only_sha(self):
         lookups = []
@@ -228,22 +210,9 @@ class FoundByTheProperties(TempDir):
         led.close_row(row["id"], "owner", '"A" 2026-01-16 14:02Z', "price A chosen", now=T0)
         self.assertEqual(led.rows(), [])
 
-    def test_an_existing_archive_accepts_legacy_owner_refs(self):
-        archive = self.root / "ledger" / "closed-2026-01.md"
-        archive.parent.mkdir()
-        archive.write_text(
-            "| id | key | closed | proof | last next action |\n|---|---|---|---|---|\n"
-            + "".join(f"| R-{number:03d} | — | 2026-01-16 14:00Z | owner: {ref} - decision recorded | Record decision |\n"
-                      for number, ref in enumerate(self.LEGACY_OWNER_REFS, 1))
-        )
-        self.assertEqual(ls.Ledger(self.root).check(), ([], []))
-
-    def test_a_new_owner_close_requires_the_strict_format(self):
+    def test_a_new_owner_quote_with_a_leading_apostrophe_passes_archive_check(self):
         led = ls.Ledger(self.root)
         row = led.write_row(None, next="Record the owner's decision")
-        for ref in self.LEGACY_OWNER_REFS:
-            with self.subTest(ref=ref), self.assertRaises(ls.ProofRefused):
-                led.close_row(row["id"], "owner", ref, "decision recorded", now=T0)
         led.close_row(row["id"], "owner", '"’twas time" 2026-01-16 14:02Z', "decision recorded", now=T0)
         self.assertEqual(led.check(), ([], []))
 
@@ -266,6 +235,87 @@ class FoundByTheProperties(TempDir):
         for stamp in ("14:02Z", "2024-02-29 5:02 UTC"):
             with self.subTest(stamp=stamp):
                 self.assertIsNone(ls.proof_problem("owner", f'"Ship it" {stamp}', "decision recorded"))
+
+
+class ArchiveCompatibility(TempDir):
+    # Every ref was closed and checked by main (59074d02). Each pair lists refs
+    # accepted for both paths, then refs accepted only in the archive.
+    MAIN_PROOFS = {
+        "tests": (("Ran 88 tests in 6.1s OK", "64/64 passing", "run 419828"), ()),
+        "ci": (("run 419828 completed/success", "89f09d6 success", "abcdefabcdef success"),
+               ("fcaabad success", "abcdefabcde success")),
+        "merged": (("89f09d6", "abcdefabcdef", "a" * 40), ("fcaabad", "abcdefabcde")),
+        "deployed": (("deploy dep-4417, readyz 200", "build-4417 healthy"), ()),
+        "config": (("autoDeploy=false", "autoDeploy -> false", "autoDeploy → false"),
+                   ("read back autoDeploy", "read back ok", "READ-BACK autoDeploy", "readback")),
+        "message": (("issuecomment-3456789", "1234"), ()),
+        "owner": (('"ship it" 2026-01-16 14:02Z', "'go' 14:02 UTC"),
+                  ('"ship it" 2026-01-16 14:02 EST', '"ship it" 2026-01-16 14:02:30Z', '"go" at 14:02Z',
+                   'Andrew: "ship it" 14:02Z', '"ship it" (14:02Z)', '"ship it" circa 2026-01-16 14:02Z',
+                   '"ship it" 2026-01-16 29:99Z', '"ship it" 2026-02-30 14:02Z', '"wait until 5:00 UTC"')),
+        "folded": (("R-001",), ()),
+        "void": (("created by a unit test", "accidental duplicate", "created by setup"), ()),
+    }
+
+    def assert_archive_compatibility(self, kind):
+        new_refs, archive_only = self.MAIN_PROOFS[kind]
+        refs = new_refs + archive_only
+        archived = ls.Ledger(self.root / "previous")
+        archive_path = archived.root / "ledger" / "closed-2026-01.md"
+        archive_path.parent.mkdir(parents=True)
+        archive_path.write_text(
+            "| id | key | closed | proof | last next action |\n|---|---|---|---|---|\n"
+            + "".join(f"| R-{number:03d} | — | 2026-01-16 14:00Z | {kind}: {ref} - x | Record evidence |\n"
+                      for number, ref in enumerate(refs, 2))
+        )
+        with self.subTest(path="archive"):
+            self.assertEqual(len(archived.closed_rows()), len(refs))
+            self.assertEqual(archived.check(), ([], []))
+
+        led = ls.Ledger(self.root / "new")
+        if kind == "folded":
+            led.write_row(None, next="Carry follow-ups for R-002")
+        for ref in new_refs:
+            with self.subTest(path="new close", ref=ref):
+                row = led.write_row(None, next="Record evidence")
+                led.close_row(row["id"], kind, ref, "x", now=T0)
+        if archive_only:
+            row = led.write_row(None, next="Record legacy evidence")
+            for ref in archive_only:
+                with self.subTest(path="new close", ref=ref), self.assertRaises(ls.ProofRefused):
+                    led.close_row(row["id"], kind, ref, "x", now=T0)
+        self.assertEqual(len(led.closed_rows()), len(new_refs))
+        self.assertEqual(led.check(), ([], []))
+
+    def test_fixture_table_covers_every_proof_kind(self):
+        self.assertEqual(set(self.MAIN_PROOFS), set(ls.PROOF_KINDS))
+
+    def test_tests_compatibility(self):
+        self.assert_archive_compatibility("tests")
+
+    def test_ci_compatibility(self):
+        self.assert_archive_compatibility("ci")
+
+    def test_merged_compatibility(self):
+        self.assert_archive_compatibility("merged")
+
+    def test_deployed_compatibility(self):
+        self.assert_archive_compatibility("deployed")
+
+    def test_config_compatibility(self):
+        self.assert_archive_compatibility("config")
+
+    def test_message_compatibility(self):
+        self.assert_archive_compatibility("message")
+
+    def test_owner_compatibility(self):
+        self.assert_archive_compatibility("owner")
+
+    def test_folded_compatibility(self):
+        self.assert_archive_compatibility("folded")
+
+    def test_void_compatibility(self):
+        self.assert_archive_compatibility("void")
 
 
 class OneLiveClaimPerRow(TempDir):

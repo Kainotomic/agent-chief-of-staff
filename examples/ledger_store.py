@@ -92,6 +92,7 @@ PASS_RATIO = re.compile(r"(?<![\w.])(\d+)\s*/\s*(\d+)\s*(?:tests?|passed|passing
 LIVE_STATUS = re.compile(r"(?<![\w.-])(?:[1-5]\d\d|healthy|success|passed|PASS)(?![\w-]|\.\w)")  # not inside an id
 ID_TOKEN = re.compile(r"(?<![\w.-])(?=[\w.-]*\d)[\w.-]{4,}(?![\w.-])")
 READ_BACK = re.compile(r"\w\s*(?:==?|->|→)\s*\S")  # the setting as read back: name=value, not the words "read back"
+LEGACY_READ_BACK = re.compile(r"read[ -]?back", re.I)
 MESSAGE_ID = re.compile(r"\d{4,}")
 # Archive checks also accept the quote and clock patterns used before OWNER_REF.
 LEGACY_OWNER_QUOTE = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
@@ -569,8 +570,9 @@ def proof_problem(kind: str, ref: str, text: str, *, archived: bool = False,
     if kind == "deployed":
         if not any(ID_TOKEN.search(ref[:m.start()] + " " + ref[m.end():]) for m in LIVE_STATUS.finditer(ref)):
             return "a deployed proof needs a deploy or run id plus a live check status"
-    if kind == "config" and not READ_BACK.search(ref):
-        return "a config proof needs the setting read back (name=value)"
+    if kind == "config":
+        if not (READ_BACK.search(ref) or (archived and LEGACY_READ_BACK.search(ref))):
+            return "a config proof needs the setting read back (name=value)"
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
     if kind == "owner":

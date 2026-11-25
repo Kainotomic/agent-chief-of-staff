@@ -36,7 +36,7 @@ The coordinator's scripts guard everything else, so test them hardest. Write pro
 - a close whose proof is only prose is refused for every proof kind (`void` takes a reason, and only one naming a test or an accident);
 - two live claims on one row are refused, including on a row with no tracker key ([examples/dispatch_guard.py](../examples/dispatch_guard.py) checks the row's claim and live workers whether or not there is a key).
 
-In their first hour, properties like these found two real bugs and one dangerous test (see [lessons.md](lessons.md#testing-and-verification)). [examples/test_properties.py](../examples/test_properties.py) runs all four on this repo's examples with a seeded generator, standard library only; it found three gaps here too. **Tests stub every external call.** A test that can reach a real database, tracker or host will, one day, through a stale fixture path.
+In their first hour, properties like these found two real bugs and one dangerous test (see [lessons.md](lessons.md#testing-and-verification)). [examples/test_properties.py](../examples/test_properties.py) runs all four on this repo's examples with a seeded generator, standard library only; it found three gaps here too. The compatibility tests also check refs written by the prior ledger rules for all nine proof kinds. They exercise stricter new closes for `ci`, `merged`, `config` and `owner`. **Tests stub every external call.** A test that can reach a real database, tracker or host will, one day, through a stale fixture path.
 
 ## Differential checks before a cutover
 
