@@ -93,6 +93,9 @@ LIVE_STATUS = re.compile(r"(?<![\w.-])(?:[1-5]\d\d|healthy|success|passed|PASS)(
 ID_TOKEN = re.compile(r"(?<![\w.-])(?=[\w.-]*\d)[\w.-]{4,}(?![\w.-])")
 READ_BACK = re.compile(r"\w\s*(?:==?|->|→)\s*\S")  # the setting as read back: name=value, not the words "read back"
 MESSAGE_ID = re.compile(r"\d{4,}")
+# Archive checks also accept the quote and clock patterns used before OWNER_REF.
+LEGACY_OWNER_QUOTE = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
+LEGACY_OWNER_TIME = re.compile(r"\b\d{1,2}:\d\d(?!\d)")
 # Match the complete ref so apostrophes inside the quote cannot end it before the timestamp.
 OWNER_REF = re.compile(
     r"""(?P<quote>"[^"]*"|“[^”]*”|'(?:[^']|(?<=\w)')*'|‘(?:[^‘’]|(?<=\w)’)*’) """
@@ -571,6 +574,8 @@ def proof_problem(kind: str, ref: str, text: str, *, archived: bool = False,
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
     if kind == "owner":
+        if archived and LEGACY_OWNER_QUOTE.search(ref) and LEGACY_OWNER_TIME.search(ref):
+            return None
         match = OWNER_REF.fullmatch(ref)
         if not match or not match["quote"][1:-1].strip():
             return "an owner proof needs the owner's quoted words followed by the exact clock minute"

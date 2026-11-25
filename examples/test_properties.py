@@ -163,6 +163,14 @@ class ProseIsNotProof(unittest.TestCase):
 class FoundByTheProperties(TempDir):
     """The gaps the properties above found in this repo, as named cases."""
 
+    LEGACY_OWNER_REFS = (
+        '"ship it" 2026-01-16 14:02 EST',
+        '"ship it" 2026-01-16 14:02:30Z',
+        '"go" at 14:02Z',
+        'Andrew: "ship it" 14:02Z',
+        '"ship it" (14:02Z)',
+    )
+
     def test_a_word_made_of_hex_letters_is_not_a_sha(self):
         for word in ("defaced", "acceded", "deadbeef", "effaced"):
             self.assertIsNotNone(ls.proof_problem("merged", word, "merged the PR"), word)
@@ -219,6 +227,25 @@ class FoundByTheProperties(TempDir):
             led.close_row(row["id"], "owner", '"A" 2026-01-16 ~14:02Z', "price A chosen", now=T0)
         led.close_row(row["id"], "owner", '"A" 2026-01-16 14:02Z', "price A chosen", now=T0)
         self.assertEqual(led.rows(), [])
+
+    def test_an_existing_archive_accepts_legacy_owner_refs(self):
+        archive = self.root / "ledger" / "closed-2026-01.md"
+        archive.parent.mkdir()
+        archive.write_text(
+            "| id | key | closed | proof | last next action |\n|---|---|---|---|---|\n"
+            + "".join(f"| R-{number:03d} | — | 2026-01-16 14:00Z | owner: {ref} - decision recorded | Record decision |\n"
+                      for number, ref in enumerate(self.LEGACY_OWNER_REFS, 1))
+        )
+        self.assertEqual(ls.Ledger(self.root).check(), ([], []))
+
+    def test_a_new_owner_close_requires_the_strict_format(self):
+        led = ls.Ledger(self.root)
+        row = led.write_row(None, next="Record the owner's decision")
+        for ref in self.LEGACY_OWNER_REFS:
+            with self.subTest(ref=ref), self.assertRaises(ls.ProofRefused):
+                led.close_row(row["id"], "owner", ref, "decision recorded", now=T0)
+        led.close_row(row["id"], "owner", '"’twas time" 2026-01-16 14:02Z', "decision recorded", now=T0)
+        self.assertEqual(led.check(), ([], []))
 
     def test_the_owner_s_own_words_may_name_a_rough_time(self):
         words = ("Schedule the deploy around 5:00 UTC", "ship it ~05:00Z", "after xx:xx is fine",
