@@ -40,11 +40,13 @@ In their first hour, properties like these found two real bugs and one dangerous
 
 ## Differential checks before a cutover
 
-Before replacing a service, run the same inputs through the old and the new one and compare. **Set the pass bar before you start**, so the result cannot argue you into it.
+Before replacing a service, run the same inputs through the old and the new one and compare. **Set the pass bar before you start**, so the result cannot argue you into it. [examples/differential.py](../examples/differential.py) takes the bar as an argument of the run and counts a call that fails as a failure, never a skip.
+
+The example gives each adapter its own deep copy of the input and captures each response before another adapter can change it. Inputs and exact field values must support deep copying. For ranked results it validates every result ID and measures overlap within the top k.
 
 | service | inputs | pass bar |
 |---|---|---|
-| Memory service | 20 real recall queries | Same top result on all 20; at least 8 of the top 10 overlap; row counts equal |
+| Memory service | 20 real recall queries | Same top result on all 20; at least 8 of the top 10 overlap; both row counts are nonnegative integers and equal |
 | Model gateway | The same real calls | Same status and same model id on every call |
 
 - **Keep the old service running until a real caller succeeds after the flip.** The comparison proves the new service; a caller proves the wiring.

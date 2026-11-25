@@ -1,0 +1,387 @@
+"""The rendering the merge gate depends on, per #36: one CommonMark inline pass, spec cases asserted on the
+visible words. Every case states the *visible* text a reader sees; the gate's holds and findings are read from
+exactly those words, so a case here that drifts is a false green or a false red waiting to happen."""
+import unittest
+from datetime import datetime, timezone
+
+import md_inline as md
+import merge_gate as mg
+
+T0 = datetime(2026, 1, 16, 14, 0, tzinfo=timezone.utc)
+HEAD = "a" * 40
+
+
+def _pr(body: str, title: str = "ISSUE-1 fix") -> mg.PR:
+    return mg.PR(repo="org/app", number=1, title=title, body=body, head_sha=HEAD, is_draft=False,
+                 mergeable=True, checks={"ci": "success"}, reviews=[mg.Review(HEAD, "verdict: clean")],
+                 unresolved_threads=0, last_push_at=T0)
+
+
+class InlineSpecCases(unittest.TestCase):
+    """CommonMark inline examples, each asserting the visible text (adapted from the spec's own examples)."""
+
+    CASES = [
+        # escapes: an escaped punctuation character is that character
+        # every ASCII punctuation character is escapable and shows as itself; the three emphasis marks are the one
+        # documented deviation below
+        (r"\!\"\#\$\%\&\'\(\)\+\,\-\.\/\:\;\<\=\>\?\@\[\\\]\^\`\{\|\}",
+         "!\"#$%&'()+,-./:;<=>?@[\\]^`{|}", {}),
+        (r"escaped \_ \* \~ marks vanish", "escaped marks vanish", {}),
+        # Documented deviation from the spec, kept from #35: escaped emphasis marks are dropped, not shown, so a
+        # spaced hold still reads as one. `\*` `\_` `\~` therefore vanish (see GateReadsTheVisibleWords).
+        (r"escaped \*stars\* and \_underscores\_ and \~tildes\~", "escaped stars and underscores and tildes", {}),
+        ("foo\\\nbar", "foo\nbar", {}),
+        # code spans: contents are literal, backtick runs match by length
+        ("`foo`", "foo", {}),
+        ("`` foo ` bar ``", "foo ` bar", {}),
+        ("` `` `", "``", {}),
+        ("`  ``  `", " `` ", {}),
+        ("`foo   bar\n  baz`", "foo bar baz", {}),
+        ("`foo``bar`", "foo``bar", {}),
+        ("`<WIP>`", "<WIP>", {}),
+        ("`<!-- not a comment -->`", "<!-- not a comment -->", {}),
+        # emphasis is invisible; the words survive
+        ("*single asterisks*", "single asterisks", {}),
+        ("**double asterisks**", "double asterisks", {}),
+        ("*foo**bar**baz*", "foobarbaz", {}),
+        ("_foo_bar_baz_", "foobarbaz", {}),
+        ("~~struck~~", "struck", {}),
+        # links: the label shows, the destination does not
+        ("[link](/uri \"title\")", "link", {}),
+        ("[link](</my uri>)", "link", {}),
+        ("[link](foo\\(bar\\))", "link", {}),
+        ("[foo][bar]", "foo", {"bar": "https://x.test"}),
+        ("[foo][]", "foo", {"foo": "https://x.test"}),
+        ("[foo]", "foo", {"foo": "https://x.test"}),
+        ("[not a link][undefined]", "[not a link][undefined]", {}),
+        ("[not a link](with space)", "[not a link](with space)", {}),
+        ("![image](/img.png)", "image", {}),
+        # autolinks show their address; a tag or comment shows nothing
+        ("<https://example.test/WIP>", "https://example.test/WIP", {}),
+        ("<foo@bar.example.com>", "foo@bar.example.com", {}),
+        ("<span>inline</span>", "inline", {}),
+        ("<a href=\"x\">linked</a>", "linked", {}),
+        ("<!-- comment --> text", " text", {}),
+        # Ambiguous comment forms render LITERALLY (fail-closed: words stay visible), per cmark's grammar.
+        ("<!-->do not merge-->", "<!-->do not merge-->", {}),
+        ("<!--->", "<!--->", {}),
+        ("<!--wip--->", "<!--wip--->", {}),
+        ("<!-- a -- b -->", "<!-- a -- b -->", {}),  # a body containing "--" is not a comment here (fail-closed)
+        ("<!DOCTYPE html> shipped", " shipped", {}),
+        ("<!bug> shipped", " shipped", {}),
+        # entities show their character
+        ("&amp; &copy; &#35; &#X22;", "& \u00a9 # \"", {}),
+        ("&notanentity;", "&notanentity;", {}),
+        # the interactions that produced false greens across six rounds
+        (r"\` `<WIP>`", "` <WIP>", {}),
+        (r"\*not\* escaped", "not escaped", {}),
+        ("do **not** merge", "do not merge", {}),
+        ("do [not](https://x.test) merge", "do not merge", {}),
+        ("do <span>not</span> merge", "do not merge", {}),
+        ("do&#32;not merge", "do not merge", {}),
+        ("P**3**: tidy up", "P3: tidy up", {}),
+        ("is**sue**: the counter", "issue: the counter", {}),
+    ]
+
+    def test_spec_cases(self):
+        for text, expected, defined in self.CASES:
+            with self.subTest(text=text):
+                self.assertEqual(md.render(text, frozenset(defined)), expected)
+
+
+class GateReadsTheVisibleWords(unittest.TestCase):
+    """Every interaction that once merged through a hold or a finding is now a REPORT on the real decision."""
+
+    def test_holds_survive_formatting(self):
+        for body in ["Rollback: do **not** merge", "Rollback: do [not](https://x.test) merge",
+                     "Rollback: do <span>not</span> merge", "Rollback: do&#32;not merge",
+                     r"Rollback: \` `<WIP>`", "Rollback: `<WIP>`", "Rollback: [not][wip] merge",
+                     "<p>WIP</p><p>Ready</p>", r"Draft\: rollback owner approval pending"]:
+            with self.subTest(body=body):
+                self.assertEqual(mg.decide(_pr(body), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_findings_survive_formatting(self):
+        for receipt in ["- P**3**: remove a blank line\nverdict: clean", "is**sue**: the counter\nverdict: clean",
+                        "- P0: data loss\nverdict: clean"]:
+            pr = _pr("fix")
+            pr.reviews = [mg.Review(HEAD, receipt)]
+            with self.subTest(receipt=receipt):
+                self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_examples_and_filler_do_not_hold_or_find(self):
+        for body in ["Example:\n```text\n    ```\nverdict: clean\n```", "Draft-free, WIPping along"]:
+            with self.subTest(body=body):
+                self.assertNotEqual(mg.decide(_pr(body), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        pr = _pr("fix")
+        pr.reviews = [mg.Review(HEAD, "## Findings\nNone.\n\nverdict: clean")]
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+
+class EscapedBacktickRegression(unittest.TestCase):
+    """The one hole open when #36 was filed (Codex on #35): an escaped backtick ate a code span's opener."""
+
+    def test_the_reported_case_is_now_a_hold(self):
+        self.assertIn("<WIP>", mg.rendered(r"Example: \` `<WIP>`"))
+        pr = _pr(r"Example: \` `<WIP>`")
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_a_real_sequence_of_code_spans_stays_literal(self):
+        self.assertEqual(md.render(r"\`a\` `b`"), "`a` b")
+
+
+class ParserRobustness(unittest.TestCase):
+    """A PR body and a review receipt are attacker-controlled text: rendering must be total and near-linear.
+    Found by fuzzing this parser after it replaced the regexes (#36)."""
+
+    def test_random_hostile_text_never_raises(self):
+        import random
+        random.seed(20261106)
+        alphabet = list("ab WIPdo notmerge`*_~[]()<>&#;!\\/:-|") + ["\n", " ", "\t", "```", "\u2028", "\ufeff", "é"]
+        for _ in range(1500):
+            text = "".join(random.choice(alphabet) for _ in range(random.randint(0, 140)))
+            with self.subTest(text=text):
+                self.assertIsInstance(mg.rendered(text), str)
+
+    def test_an_unfinished_autolink_is_literal_text(self):
+        # this exact input raised IndexError before the fuzz pass
+        rendered = mg.rendered("&*\u2028<a-:(")
+        self.assertIn("<a-:(", rendered)
+
+    def test_pathological_markup_stays_fast(self):
+        import time
+        for text in ["[" * 20000, "[" * 20000 + "]" * 20000, "[a](b " * 5000, "`" * 20000,
+                     "<" * 20000, "&" * 20000, "[" + "a[" * 20000 + "]" * 20000 + "]"]:
+            start = time.monotonic()
+            mg.rendered(text)
+            self.assertLess(time.monotonic() - start, 2.0, f"{len(text)} chars took too long")
+
+    def assert_linear(self, unit: str):
+        """Rendering `unit` repeated to 64 KiB costs about 4x what 16 KiB does; a rescan per opener costs 16x. The
+        ratio, not a wall-clock bound, is what holds on a loaded host; the 2 s ceiling still catches a stall."""
+        import time
+
+        def fastest(text):
+            samples = []
+            for _ in range(3):
+                start = time.perf_counter()
+                self.assertIsInstance(mg.rendered(text), str)
+                samples.append(time.perf_counter() - start)
+            return min(samples)
+
+        small = fastest((unit * 16384)[:16384])
+        large = fastest((unit * 65536)[:65536])
+        self.assertLess(large, 2.0, f"{unit!r} over 64 KiB took {large:.2f} s")
+        self.assertLess(large / small, 8, f"{unit!r}: 16 to 64 KiB went from {small:.3f} s to {large:.3f} s")
+
+    def test_unclosed_html_constructs_stay_linear(self):
+        # review of #37: "<?" rescanned to the end of the body for every opener (64 KiB took 3 s), and "<!a" and
+        # "<![CDATA[" did the same at a smaller constant. Their closers are now indexed once, like comments.
+        for unit in ["<? ", "<!a ", "<![CDATA[ "]:
+            with self.subTest(unit=unit):
+                self.assert_linear(unit)
+
+    def test_incomplete_destinations_stay_linear(self):
+        # review of #37: every "[a]" followed by "(" rescanned the rest of the body for its destination's closing
+        # paren, so 64 KiB of "[a](" took 24 s; an open "(" title did the same. Destinations are now looked up in
+        # an index built once.
+        for unit in ["[a](", "[a](<", "[a](b ("]:
+            with self.subTest(unit=unit):
+                self.assert_linear(unit)
+
+    def test_closed_html_constructs_still_render_as_nothing(self):
+        self.assertEqual(md.render("a<?php echo 1; ?>b"), "ab")
+        self.assertEqual(md.render("a<!DOCTYPE html>b"), "ab")
+        self.assertEqual(md.render("a<![CDATA[ x ]]>b"), "ab")
+        self.assertEqual(md.render("a<?>b"), "a<?>b")
+        self.assertEqual(md.render("a<![CDATA[]]]>b"), "ab")
+
+    def test_a_long_label_is_not_link_syntax_but_its_words_show(self):
+        label = "do not merge " * 200
+        self.assertIn("do not merge", mg.rendered(f"[{label}](https://x.test)"))
+
+
+class ReviewedDefects(unittest.TestCase):
+    """Every case here is a defect an adversarial review of this parser found after it was written; the comment
+    records whether it was a regression introduced by the rewrite or inherited from the regex rounds."""
+
+    def test_a_space_before_the_parenthesis_is_not_a_link(self):
+        # regression: CommonMark needs "(" immediately after "]". Otherwise a visible "(wip)" disappeared.
+        self.assertEqual(md.render("[a] (wip)"), "[a] (wip)")
+        pr = _pr("Rollback [plan] (wip)")
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_brackets_inside_a_code_span_are_not_delimiters(self):
+        # regression: the "]" inside backticks closed an outside "[", eating the visible "(wip)".
+        self.assertEqual(md.render("See [x`](wip)` for details"), "See [x](wip) for details")
+        pr = _pr("See [x`](wip)` for details")
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_an_outer_bracket_around_a_link_is_literal(self):
+        # regression: links may not contain links, so the outer "[...](wip)" must stay visible.
+        self.assertEqual(md.render("[o [i](u)](wip)"), "[o i](wip)")
+        pr = _pr("[o [i](u)](wip)")
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_ambiguous_comments_render_literally(self):
+        # inherited: cmark's grammar rejects a body ending in "-", and "<!-->" / "<!--->" are not comments here,
+        # so a hold written inside one stays visible instead of vanishing.
+        self.assertIn("do not merge", md.render("Rollback: <!-- do not merge --->").lower())
+        self.assertIn("do not merge", md.render("<!-->do not merge-->").lower())
+        self.assertIn("wip", md.render("<!--->WIP").lower())
+
+    def test_an_autolink_is_not_split_by_link_brackets(self):
+        # inherited, found in the review of #37: autolinks bind tighter than link brackets, so a "]" inside one
+        # cannot close an outside "[". Pairing across it rendered "see <https://x.test/?q=>" and hid "(WIP)".
+        text = "[see <https://x.test/?q=](WIP)>"
+        self.assertIn("(WIP)", md.render(text))
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_a_closing_tag_takes_no_attributes(self):
+        # inherited: cmark's closetag is "</" name space* ">" only, so "</b wip>" is literal text.
+        self.assertEqual(md.render("</b wip>"), "</b wip>")
+        pr = _pr("Backout </span wip> pending")
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_a_bare_destination_may_contain_balanced_parens(self):
+        # inherited false REPORT: the destination was not recognised, so its invisible words counted as findings.
+        self.assertEqual(md.render("[see](u(a(bug)))"), "see")
+        self.assertEqual(md.render("[the run](https://ex.test/p3(x))"), "the run")
+
+    def test_an_angle_destination_may_not_contain_a_bare_lt(self):
+        # regression in the first #37 head: "<" ... ">" took the first ">" and allowed another "<" inside, so the
+        # words of a malformed destination vanished as a hidden URL. CommonMark leaves the whole thing visible.
+        for text in ["[ready](<https://x.test/< do not merge>)", "[ready](<x< WIP>)"]:
+            with self.subTest(text=text):
+                self.assertEqual(md.render(text), text)
+                self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        receipt = "[ready](<x< P3: loss>)\nverdict: clean"
+        self.assertIn("P3: loss", mg.rendered(receipt))
+        pr = _pr("ready")
+        pr.reviews[:] = [mg.Review(HEAD, receipt)]
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_an_escaped_gt_stays_inside_an_angle_destination(self):
+        # the conservative half of the same review: "\>" does not close the destination, so this is a valid link
+        # whose URL holds "do not merge", and only "ready" is visible.
+        text = r"[ready](<https://x.test/\> do not merge>)"
+        self.assertEqual(md.render(text), "ready")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+    def test_a_raw_tag_after_a_failed_angle_destination_still_renders_as_nothing(self):
+        # "<WIP>" closes nothing: the link fails at its "<", and the tag is then dropped as raw HTML
+        self.assertEqual(md.render("[ready](<https://x.test/<WIP>)"), "[ready](<https://x.test/)")
+
+    def test_a_backslash_escapes_only_punctuation_in_a_bare_destination(self):
+        # "\ " is a literal backslash and then a space, which ends the destination; "WIP)" is no title, so this
+        # is not a link and WIP stays visible. Skipping any character after a backslash hid it.
+        text = r"[a](b\ WIP)"
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render(r"[a](u\)v)"), "a")
+
+    def test_a_parenthesised_title_may_not_hold_an_open_paren(self):
+        # Codex on #44: the title took the first ")" even past another "(", so a malformed link hid its words
+        text = "[ready](url (approval (do not merge))"
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render(r"[ready](url (approval \(x\)))"), "ready")
+
+    def test_an_escaped_bang_opens_no_image_inside_a_label(self):
+        # Codex on #44: "\![inner](u)" is a link, not an image, so the outer brackets are literal and (WIP) shows
+        text = r"[outer \![inner](u)](WIP)"
+        self.assertEqual(md.render(text), "[outer !inner](WIP)")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(md.render("[a ![i](u)](WIP)"), "a i")
+
+    def test_brackets_inside_raw_html_are_not_delimiters(self):
+        # Codex on #44: the "[" inside a comment paired with the label's "]", leaving a hidden URL visible
+        text = "[build <!-- [ -->status](https://ci.test/WIP)"
+        self.assertEqual(md.render(text), "build status")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+        self.assertEqual(md.render('[a <span title="]">b</span>](https://x.test/WIP)'), "a b")
+
+    def test_a_comment_may_span_lines_and_hold_a_gt(self):
+        # Codex on #44: a PR template's multi-line comment, or one holding ">", is a comment and renders as nothing
+        for text in ["<!--\nWIP\n-->", "<!-- status > WIP -->", "Summary\n<!--\nDo not merge before QA.\n-->\nDone"]:
+            with self.subTest(text=text):
+                self.assertNotIn("wip", mg.rendered(text).lower())
+                self.assertNotIn("merge", mg.rendered(text).lower())
+                self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+    def test_a_link_title_is_consumed_before_raw_html(self):
+        # Codex on #44: "<!--" inside a title was skipped to the "-->" after the next link, hiding its brackets
+        text = '[a](u "<!--")[b](WIP)-->'
+        self.assertEqual(md.render(text), "ab-->")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+
+    def test_a_rejected_outer_link_leaves_its_destination_to_be_parsed(self):
+        # Codex on #44: the outer link holds a link, so it is literal and "[logs](...)" is a link of its own
+        text = "[see [CI](url)]([logs](https://ci.test/WIP))"
+        self.assertEqual(md.render(text), "[see CI](logs)")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "MERGE")
+        self.assertEqual(md.render("[see [CI]]([logs](https://ci.test/WIP))", frozenset({"ci"})), "[see CI](logs)")
+
+    def test_an_omitted_destination_does_not_make_a_title(self):
+        # Codex on #44 suggested this was a link with a title; CommonMark (markdown-it-py 4.0.0) renders it as text
+        text = '[ready]( "do not merge")'
+        self.assertEqual(md.render(text), text)
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_past_the_nesting_limit_words_still_render(self):
+        # Codex on #44: past MAX_DEPTH the label came back unrendered, so "&#87;IP" hid a visible WIP
+        text = "![" * md.MAX_DEPTH + "&#87;IP" + "](u)" * md.MAX_DEPTH
+        self.assertIn("WIP", mg.rendered(text))
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+
+    def test_a_comment_opened_inside_a_reference_label_is_still_a_comment(self):
+        # Codex on #44 suggested the label is consumed first; CommonMark (markdown-it-py 4.0.0) reads raw HTML first,
+        # so "<!--] WIP -->" is a comment and only "[ready][" is visible, with or without a "[<!--]" definition
+        self.assertEqual(md.render("[ready][<!--] WIP -->"), "[ready][")
+        text = "[ready][<!--] WIP -->\n\n[<!--]: /url"
+        self.assertNotIn("WIP", mg.rendered(text))
+
+    def test_a_line_that_only_starts_like_a_definition_is_prose(self):
+        # Codex on #44: "[note]: do **not** merge" is no reference definition, so its emphasis renders and it holds
+        text = "[note]: do **not** merge"
+        self.assertEqual(mg.rendered(text), "[note]: do not merge")
+        self.assertEqual(mg.decide(_pr(text), "", mg.Policy(frozenset()), T0).action, "REPORT")
+        pr = _pr("ready")
+        pr.reviews[:] = [mg.Review(HEAD, "[note]: P**3**: loss\nverdict: clean")]
+        self.assertEqual(mg.decide(pr, "", mg.Policy(frozenset()), T0).action, "REPORT")
+        self.assertEqual(mg.rendered('[x]: https://u "t"\n\n[x]'), '[x]: https://u "t"\n\nx')
+        self.assertEqual(mg.rendered("[x]: <u> 't' extra"), "[x]: 't' extra")
+
+    def test_an_autolink_in_a_label_does_not_stop_the_link(self):
+        # Codex on #44 suggested an autolink makes the outer brackets literal; CommonMark (markdown-it-py 4.0.0)
+        # still forms the outer link, so its destination stays hidden
+        text = "[outer <https://ci.test> `build`](WIP)"
+        self.assertEqual(md.render(text), "outer https://ci.test build")
+
+    def test_a_declaration_needs_no_space_after_its_name(self):
+        # inherited false REPORT: "<!bug>" is a declaration (hidden), not visible words.
+        self.assertEqual(md.render("<!bug> shipped"), " shipped")
+
+
+class NotTheRegexesAgain(unittest.TestCase):
+    """The point of #36: the constructs that kept interacting, asserted together in one pass."""
+
+    def test_the_escaped_backtick_case_and_its_neighbours(self):
+        cases = {
+            r"\` `<WIP>`": "` <WIP>",          # the #36 hole: the code span must still open at the real backtick
+            "`<WIP>`": "<WIP>",                # a code span keeps its contents literal
+            r"\`WIP\`": "`WIP`",               # an escaped backtick is a literal backtick, and the word stays visible
+            "`` `<WIP>` ``": "`<WIP>`",
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(md.render(text), expected)
+
+    def test_no_link_syntax_survives_as_a_bare_destination(self):
+        # every destination form hides its URL but keeps its label
+        for text, expected in [("[a](u)", "a"), ("[a](<u v>)", "a"), ('[a](u "t")', "a"),
+                               ("[a](u(a))", "a"), (r"[a](u\(a\))", "a"), ("[a][b]", "a")]:
+            with self.subTest(text=text):
+                self.assertEqual(md.render(text, frozenset({"b"})), expected)
+
+if __name__ == "__main__":
+    unittest.main()
