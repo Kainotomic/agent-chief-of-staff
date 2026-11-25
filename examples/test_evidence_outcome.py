@@ -140,6 +140,41 @@ class ArchiveReplay(Temp):
         self.assertEqual((ledger.notes / f"{row['id']}.md").read_text().count("## proof"), 1)
         self.assertEqual(len(ledger.closed_rows()), 1)
 
+    def test_a_legacy_close_can_resume_after_an_upgrade(self):
+        cases = (
+            ("owner", '"ship it" at 14:02Z', '"ship it" 14:02Z'),
+            ("config", "read back autoDeploy", "autoDeploy=false"),
+            ("ci", "fcaabad success", "fcaabad123456 success"),
+            ("merged", "fcaabad", "fcaabad123456"),
+        )
+        validate = ls.proof_problem
+
+        def legacy_validation(kind, ref, text, **options):
+            return validate(kind, ref, text, archived=True)
+
+        for kind, legacy_ref, replacement_ref in cases:
+            with self.subTest(kind=kind):
+                ledger = ls.Ledger(self.sub(kind))
+                row_id = ledger.write_row(None, next="Close once")["id"]
+                other_id = ledger.write_row(None, next="Keep this row open")["id"]
+                text = "evidence recorded"
+                with mock.patch.object(ls, "proof_problem", legacy_validation), self.crash_after_archive(ledger):
+                    with self.assertRaisesRegex(OSError, "crash after the archive append"):
+                        ledger.close_row(row_id, kind, legacy_ref, text, now=T0)
+                archive, = (ledger.root / "ledger").glob("closed-*.md")
+                note = ledger.notes / f"{row_id}.md"
+                archive_before, note_before = archive.read_bytes(), note.read_bytes()
+
+                ledger = ls.Ledger(ledger.root)
+                with self.assertRaises(ls.ProofRefused):
+                    ledger.close_row(other_id, kind, legacy_ref, text, now=T0)
+                with self.assertRaisesRegex(ls.CloseRefused, "already archived"):
+                    ledger.close_row(row_id, kind, replacement_ref, text, now=T0)
+                self.assertEqual(ledger.close_row(row_id, kind, legacy_ref, text, now=T0), str(archive))
+                self.assertEqual([row["id"] for row in ledger.rows()], [other_id])
+                self.assertEqual(ledger.check(), ([], []))
+                self.assertEqual((archive.read_bytes(), note.read_bytes()), (archive_before, note_before))
+
     def test_the_note_keeps_the_proof_verbatim(self):
         ledger = ls.Ledger(self.root)
         row = ledger.write_row(None, next="set the banner")

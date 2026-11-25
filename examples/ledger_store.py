@@ -346,12 +346,12 @@ class Ledger:
         written next, then the ledger line is removed. Each of the three is a whole-file atomic replace, so a crash
         leaves every file old or new, never a torn tail. A crash between two of them leaves the id in both the ledger
         and the archive, which check() reports; finish by re-running the same close_row call: it finds its own
-        archived row (same id, kind and ref), writes nothing again and removes the ledger line. An id already
-        archived with other proof is refused (ids are never reused)."""
+        archived row (same id, kind and ref), uses archive proof validation for the retry and removes the ledger
+        line. An id already archived with other proof is refused (ids are never reused)."""
         proof = Proof(kind, " ".join(str(ref or "").split()), " ".join(str(text or "").split()))
         verifies_merge_sha = getattr(self.can_close, "_verifies_merge_sha", False) is True
         problem = proof_problem(proof.kind, proof.ref, proof.text, verify_merge_sha=verifies_merge_sha)
-        if problem:
+        if problem and proof_problem(proof.kind, proof.ref, proof.text, archived=True):
             raise ProofRefused(f"{row_id} not closed: {problem}")
         now = now or datetime.now(timezone.utc)
         with self._fenced(expect_epoch), file_lock(self.lock):
@@ -368,6 +368,12 @@ class Ledger:
                                    f"({', '.join(first['ids']) or 'no id left'}) is {first['problem']}"
                                    + (f" (+{len(torn) - 1} more)" if len(torn) > 1 else "")
                                    + "; repair the archive by hand first (check() lists every line)")
+            # Match under the lock before allowing a retry to use the older proof format.
+            archived = [r for r in self.closed_rows() if r["id"] == row_id]
+            same = next((r for r in archived if (p := parse_proof(r["proof"])) and (p.kind, p.ref) == (proof.kind, clean(proof.ref))),
+                        None)
+            if problem and same is None:
+                raise ProofRefused(f"{row_id} not closed: {problem}")
             if kind == "folded":
                 reason = self._fold_problem(row_id, proof.ref, rows)
                 if reason:
@@ -376,10 +382,6 @@ class Ledger:
                 reason = self.can_close(row, proof)
                 if reason:
                     raise CloseRefused(reason)
-            # A retry after a crash finds its own archived row: compare as archived (clean() rewrites pipes).
-            archived = [r for r in self.closed_rows() if r["id"] == row_id]
-            same = next((r for r in archived if (p := parse_proof(r["proof"])) and (p.kind, p.ref) == (proof.kind, clean(proof.ref))),
-                        None)
             if archived and same is None:
                 raise CloseRefused(f"{row_id} is already archived in {archived[0]['_file']} with other proof "
                                    f"({archived[0]['proof']}); ids are never reused")

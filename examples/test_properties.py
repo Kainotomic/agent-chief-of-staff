@@ -241,7 +241,8 @@ class ArchiveCompatibility(TempDir):
     # Every ref was closed and checked by main (59074d02). Each pair lists refs
     # accepted for both paths, then refs accepted only in the archive.
     MAIN_PROOFS = {
-        "tests": (("Ran 88 tests in 6.1s OK", "64/64 passing", "run 419828"), ()),
+        "tests": (("Ran 88", "88 tests", "88 passed", "88 passing", "0 failed", "0 failures", "0 errors",
+                   "1 skipped; OK", "64/64", "88 OK", "OK (integration suite)", "run 419828"), ()),
         "ci": (("run 419828 completed/success", "89f09d6 success", "abcdefabcdef success"),
                ("fcaabad success", "abcdefabcde success")),
         "merged": (("89f09d6", "abcdefabcdef", "a" * 40), ("fcaabad", "abcdefabcde")),
@@ -254,7 +255,9 @@ class ArchiveCompatibility(TempDir):
                    'Andrew: "ship it" 14:02Z', '"ship it" (14:02Z)', '"ship it" circa 2026-01-16 14:02Z',
                    '"ship it" 2026-01-16 29:99Z', '"ship it" 2026-02-30 14:02Z', '"wait until 5:00 UTC"')),
         "folded": (("R-001",), ()),
-        "void": (("created by a unit test", "accidental duplicate", "created by setup"), ()),
+        "void": (("unit test", "queued tests", "testing queue", "fixture row", "accidental duplicate",
+                  "mistaken duplicate", "opened in error", "opened by error", "typo in title", "stray row",
+                  "created by setup"), ()),
     }
 
     def assert_archive_compatibility(self, kind):
