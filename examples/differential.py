@@ -5,18 +5,21 @@ against a pass bar fixed before the first call (docs/verification.md).
 Rules this sketch implements:
   - the bar is an argument of the run, so it is set before any result exists; the report carries it, so a reader
     sees what the result was judged against;
-  - every input goes to both services: a call that raises, or returns something of the wrong shape (a ranked list
-    with an entry that is not a result id), is a failure on that input, never a skip, and the run goes on;
+  - both services get independent deep copies of the input, and each response is captured as soon as it returns;
+  - a copy or call that raises, or a response of the wrong shape (including an invalid result id anywhere in
+    a ranked list), fails that input and the run goes on;
   - no inputs, or no comparable result, is a failure: a comparison of nothing passes nothing;
   - ranked results (a memory service's recall) pass when the top result matches on the required share of inputs,
     the top k overlap by at least min_overlap on every input (or all of the old top k, when it holds fewer), and
-    the row counts are equal when count callables are given;
+    the row counts are equal nonnegative integers when the bar requires them;
   - exact results (a model gateway) pass when every listed field is present and equal on both sides, every call.
 
-Standard library only. Inject the two services as callables: input -> result.
+Standard library only. Inject the two services as callables: input -> result. Inputs and exact field values
+must support deep copying.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Sequence
 
@@ -49,34 +52,47 @@ class Report:
         return "\n".join([head, *(f"  fail: {f}" for f in self.failures), *(f"  note: {n}" for n in self.notes)])
 
 
-def _call(service: Callable, item, side: str, i: int):
+def _call(service: Callable, item, side: str, i: int, capture: Callable):
     try:
-        return service(item), None
+        value = service(item)
     except Exception as error:  # a failed call is a finding, not a skip
         return None, f"input {i}: {side} raised {type(error).__name__}"
+    try:
+        result, problem = capture(value)
+    except Exception as error:
+        return None, f"input {i}: {side} could not capture response ({type(error).__name__})"
+    return result, f"input {i}: {side} {problem}" if problem else None
+
+
+def _paired_calls(item, old: Callable, new: Callable, i: int, capture: Callable):
+    try:
+        old_input, new_input = deepcopy(item), deepcopy(item)
+    except Exception as error:
+        return None, None, [f"input {i}: could not copy request ({type(error).__name__})"]
+    a, problem_a = _call(old, old_input, "old", i, capture)
+    b, problem_b = _call(new, new_input, "new", i, capture)
+    return a, b, [p for p in (problem_a, problem_b) if p]
 
 
 def compare_ranked(inputs: Iterable, old: Callable[[object], Sequence], new: Callable[[object], Sequence],
                    bar: RankedBar, count_old: Callable[[], int] | None = None,
                    count_new: Callable[[], int] | None = None) -> Report:
     """old(item) and new(item) return result ids (strings or integers), best first."""
+    def capture(value):
+        if not isinstance(value, (list, tuple)):
+            return None, f"returned {type(value).__name__}, not a ranked list"
+        for result_id in value:
+            if not isinstance(result_id, (str, int)):
+                return None, f"returned a {type(result_id).__name__} entry, not a result id"
+        return tuple(value[:bar.k]), None
+
     report, same_top, ranked = Report(bar), 0, 0
     for i, item in enumerate(inputs):
         report.compared += 1
-        a, problem_a = _call(old, item, "old", i)
-        b, problem_b = _call(new, item, "new", i)
-        problems = [p for p in (problem_a, problem_b) if p]
-        for side, value in (("old", a), ("new", b)):
-            if not problems and not isinstance(value, (list, tuple)):
-                problems.append(f"input {i}: {side} returned {type(value).__name__}, not a ranked list")
-            elif not problems:
-                bad = [r for r in value[:bar.k] if not isinstance(r, (str, int))]
-                if bad:
-                    problems.append(f"input {i}: {side} returned a {type(bad[0]).__name__} entry, not a result id")
+        a, b, problems = _paired_calls(item, old, new, i, capture)
         if problems:
             report.failures += problems
             continue
-        a, b = list(a)[:bar.k], list(b)[:bar.k]
         if not a:
             report.failures.append(f"input {i}: old returned nothing, so there is nothing to match")
             continue
@@ -98,9 +114,17 @@ def compare_ranked(inputs: Iterable, old: Callable[[object], Sequence], new: Cal
             except Exception as error:
                 report.failures.append(f"row count raised {type(error).__name__}")
             else:
-                if n_old != n_new:
-                    report.failures.append(f"row counts differ: old {n_old}, new {n_new}")
-                report.notes.append(f"row counts: old {n_old}, new {n_new}")
+                invalid = [
+                    f"{side} row count must be a nonnegative integer"
+                    for side, count in (("old", n_old), ("new", n_new))
+                    if not isinstance(count, int) or isinstance(count, bool) or count < 0
+                ]
+                if invalid:
+                    report.failures += invalid
+                else:
+                    if n_old != n_new:
+                        report.failures.append(f"row counts differ: old {n_old}, new {n_new}")
+                    report.notes.append(f"row counts: old {n_old}, new {n_new}")
     return report
 
 
@@ -109,17 +133,21 @@ def compare_exact(inputs: Iterable, old: Callable[[object], dict], new: Callable
     """old(item) and new(item) return a dict; every name in fields must be present and equal on both sides."""
     if not fields:
         raise ValueError("compare_exact needs at least one field to compare")
+
+    def capture(value):
+        if not isinstance(value, dict):
+            return {}, None
+        return deepcopy({name: value[name] for name in fields if name in value}), None
+
     report = Report(f"fields equal: {', '.join(fields)}")
     for i, item in enumerate(inputs):
         report.compared += 1
-        a, problem_a = _call(old, item, "old", i)
-        b, problem_b = _call(new, item, "new", i)
-        problems = [p for p in (problem_a, problem_b) if p]
+        a, b, problems = _paired_calls(item, old, new, i, capture)
         if problems:
             report.failures += problems
             continue
         for name in fields:
-            if not isinstance(a, dict) or not isinstance(b, dict) or name not in a or name not in b:
+            if name not in a or name not in b:
                 report.failures.append(f"input {i}: {name!r} missing on one side")
             elif a[name] != b[name]:
                 report.failures.append(f"input {i}: {name} differs: old {a[name]!r}, new {b[name]!r}")

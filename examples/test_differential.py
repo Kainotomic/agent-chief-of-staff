@@ -20,6 +20,31 @@ class Ranked(unittest.TestCase):
         self.assertTrue(report.passed, str(report))
         self.assertEqual(report.compared, 20)
 
+    def test_each_adapter_sees_the_original_nested_input(self):
+        request = {"query": ["requested"]}
+
+        def old(item):
+            item["query"][0] = "fallback"
+            return ["fallback"]
+
+        bar = df.RankedBar(k=1, min_overlap=1, equal_counts=False)
+        report = df.compare_ranked([request], old, lambda item: item["query"], bar)
+        self.assertFalse(report.passed, str(report))
+        self.assertIn("top result the same on 0 of 1", str(report))
+        self.assertEqual(request, {"query": ["requested"]})
+
+    def test_reused_ranked_buffer_preserves_the_old_result(self):
+        buffer = ["old"]
+
+        def new(item):
+            buffer[:] = ["new"]
+            return buffer
+
+        bar = df.RankedBar(k=1, min_overlap=1, equal_counts=False)
+        report = df.compare_ranked(["q"], lambda item: buffer, new, bar)
+        self.assertFalse(report.passed, str(report))
+        self.assertIn("top result the same on 0 of 1", str(report))
+
     def test_one_different_top_result_fails_a_bar_of_all(self):
         report = ranked(table({"q3": ["doc-3-1", "doc-3-0"] + OLD["q3"][2:]}))
         self.assertFalse(report.passed)
@@ -73,6 +98,15 @@ class Ranked(unittest.TestCase):
         self.assertFalse(report.passed)
         self.assertIn("new returned a NoneType entry", str(report))
 
+    def test_an_invalid_id_after_top_k_fails_on_either_side(self):
+        bar = df.RankedBar(k=1, min_overlap=1, equal_counts=False)
+        valid, invalid = lambda q: ["a"], lambda q: ["a", None]
+        for side, old, new in (("old", invalid, valid), ("new", valid, invalid)):
+            with self.subTest(side=side):
+                report = df.compare_ranked(["q"], old, new, bar)
+                self.assertFalse(report.passed, str(report))
+                self.assertIn(f"{side} returned a NoneType entry", str(report))
+
     def test_an_empty_old_result_fails(self):
         old = {"q": []}
         report = df.compare_ranked(old, old.__getitem__, old.__getitem__, df.RankedBar(equal_counts=False))
@@ -87,6 +121,18 @@ class Ranked(unittest.TestCase):
         report = df.compare_ranked(OLD, OLD.__getitem__, OLD.__getitem__, df.RankedBar())
         self.assertFalse(report.passed)
         self.assertIn("no count callables", str(report))
+
+    def test_invalid_row_counts_fail_before_equality(self):
+        cases = ((None, None, ("old", "new")), (-1, -1, ("old", "new")),
+                 (5.0, 5, ("old",)), (0, False, ("new",)), ("5", "5", ("old", "new")),
+                 (5, -1, ("new",)))
+        for old, new, invalid_sides in cases:
+            with self.subTest(old=old, new=new):
+                report = ranked(OLD.__getitem__, counts=(lambda: old, lambda: new))
+                self.assertFalse(report.passed, str(report))
+                for side in invalid_sides:
+                    self.assertIn(f"{side} row count must be a nonnegative integer", str(report))
+                self.assertNotIn("row counts differ", str(report))
 
     def test_a_count_that_raises_fails(self):
         def boom():
@@ -109,6 +155,40 @@ class Exact(unittest.TestCase):
         same = lambda c: {"status": 200, "model": "m-1", "latency_ms": 10}
         other = lambda c: {"status": 200, "model": "m-1", "latency_ms": 99}
         self.assertTrue(df.compare_exact(self.CALLS, same, other, ["status", "model"]).passed)
+
+    def test_each_adapter_sees_the_original_nested_input(self):
+        request = {"query": ["requested"]}
+
+        def old(item):
+            item["query"][0] = "fallback"
+            return {"model": "fallback"}
+
+        report = df.compare_exact([request], old, lambda item: {"model": item["query"][0]}, ["model"])
+        self.assertFalse(report.passed, str(report))
+        self.assertIn("model differs: old 'fallback', new 'requested'", str(report))
+        self.assertEqual(request, {"query": ["requested"]})
+
+    def test_reused_exact_response_preserves_the_old_fields(self):
+        buffer = {"model": "old"}
+
+        def new(item):
+            buffer["model"] = "new"
+            return buffer
+
+        report = df.compare_exact(["q"], lambda item: buffer, new, ["model"])
+        self.assertFalse(report.passed, str(report))
+        self.assertIn("model differs: old 'old', new 'new'", str(report))
+
+    def test_reused_nested_field_preserves_the_old_value(self):
+        models = ["old"]
+
+        def new(item):
+            models[:] = ["new"]
+            return {"models": models}
+
+        report = df.compare_exact(["q"], lambda item: {"models": models}, new, ["models"])
+        self.assertFalse(report.passed, str(report))
+        self.assertIn("models differs: old ['old'], new ['new']", str(report))
 
     def test_a_different_field_fails(self):
         report = df.compare_exact(self.CALLS, lambda c: {"status": 200, "model": "m-1"},

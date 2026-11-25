@@ -106,7 +106,7 @@ Small, dependency-free Python sketches (standard library only, POSIX file locks)
 | [examples/dispatch_guard.py](examples/dispatch_guard.py) | The duplicate-dispatch guard with locked, test-and-set claims |
 | [examples/merge_gate.py](examples/merge_gate.py) | A pure merge decision function |
 | [examples/lease.py](examples/lease.py) | Primary lease: init, renew, explicit takeover, and the epoch that fences a replaced primary |
-| [examples/differential.py](examples/differential.py) | Differential check before a cutover: old and new service on the same inputs, judged against a bar set before the run |
+| [examples/differential.py](examples/differential.py) | Differential check before a cutover with independent copies of each input, captured responses, and a pass bar set before the run |
 | [examples/worker-brief.md](examples/worker-brief.md) | The brief template every worker gets |
 | [examples/worker-rules.md](examples/worker-rules.md) | The shared worker rules appended to every brief |
 | [examples/test_examples.py](examples/test_examples.py) | Unit tests for the sketches |
