@@ -31,8 +31,8 @@ After 3 failed fix rounds on the same failure, stop. Hand it to a person with wh
 
 The coordinator's scripts guard everything else, so test them hardest. Write properties, not only examples:
 
-- a row that was written reads back identical;
-- an approximate or placeholder timestamp is refused in every spelling (with or without a space after the tilde, a one-digit hour, `xx:xx`);
+- A fresh ledger read preserves supplied cells after normalization and preserves cells omitted from updates. Spilled text remains in the row's note.
+- Approximate or placeholder times are refused, including a qualifier before the date or the clock. Owner proofs also reject impossible dates and clock times.
 - a close whose proof is only prose is refused for every proof kind (`void` takes a reason, and only one naming a test or an accident);
 - two live claims on one row are refused, including on a row with no tracker key ([examples/dispatch_guard.py](../examples/dispatch_guard.py) checks the row's claim and live workers whether or not there is a key).
 

@@ -93,15 +93,17 @@ A row closes only by moving to `ledger/closed-YYYY-MM.md` with proof the coordin
 |---|---|---|
 | `tests` | Tests pass | The summary counts from this run (`Ran 88 tests ... OK`, `64/64`) or the CI run id |
 | `ci` | CI is green | The run id or head commit SHA, plus the conclusion `success`, **on the head SHA** you are merging or merged |
-| `merged` | Merged | The merge commit SHA, alone. A SHA has a digit or is at least 12 characters, so a word like `defaced` is not one |
+| `merged` | Merged | The merge commit SHA, alone. A new close with a 7–11 character all-letter prefix needs a PR lookup to verify it |
 | `deployed` | Deployed | The deploy or run id plus a live check status (`readyz 200`, `healthy`); the text names the user flow re-run |
 | `config` | Config changed | The setting read back after the write (`name=value`); the words "read back" alone are not a setting |
 | `message` | Message sent | The message, comment or review id from the API response |
-| `owner` | Owner decided | The owner's words, in quotes, and outside the quotes the exact time they were said; an approximate or placeholder time there (`~05:05Z`, `circa 5:05`, `xx:xxZ`) is refused |
+| `owner` | Owner decided | The owner's words in paired quotes, followed by the exact clock minute. Use `"ship it" 2026-01-16 14:02Z`. The parser accepts a one- or two-digit hour, an optional ISO date, and `Z`, ` UTC` or ` PT` when a zone is supplied |
 | `folded` | Same work as another row | The open row id it was folded into; that row must already mention this one |
 | `void` | Opened by mistake | The reason, naming the test or accident that created it |
 
 Refused before anything is written: a kind not in the table, an empty ref, a ref or text that is only a claim (`verified`, `ok`, `done`, `works`, `the worker said it works`), and a ref with nothing the kind can check (prose). For `tests`, `ci` and `deployed` the outcome must be good, not just the shape: a ref that says `FAILED`, a nonzero failure or error count, `cancelled`, `timed out`, `no success`, a required check skipped, a nonzero exit, `63/64`, no test run, a 4xx/5xx live status or `unhealthy` is refused even when `success` also appears; zero counts (`0 failed`, `failures=0`, `no errors`) stay green. Typed fields count too: a nonzero `exit_code=` or `failure_count=`, a flag set false (`success=false`, `healthy=false`), an outcome field that is not a green word (`conclusion=no-success`, `status=neutral`), a named live check that is not 2xx/3xx (`readyz:503`), any ratio that is not all-passing (every one is read, so `12/12; retry 1/2` refuses), `0/0`, and a run where every test was skipped (`Ran 1 test OK (skipped=1)`) all refuse ([#25](https://github.com/appletechie/agent-chief-of-staff/issues/25)). The text only describes, so it refuses only on a nonzero failure count or a `FAILED` summary (after karutoil's [#22](https://github.com/appletechie/agent-chief-of-staff/issues/22)). `check()` applies the same rules to the archive, so a row moved by hand fails the checker.
+
+New `ci` proofs use a run ID or a SHA with a digit or at least 12 characters. For archived `ci` and `merged` proofs, `check()` still accepts the original 7–40 character hex format and checks the archive without a PR lookup.
 
 Not proof: a worker's "verified", a file's modification time, an HTTP 200 on a page that might be an error page, a watcher process that exited 0, a CI run on a different commit, a cancelled or timed-out step.
 

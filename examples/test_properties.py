@@ -15,8 +15,8 @@ CASES = 300
 
 # Text that has broken table rows before: pipes, every line boundary splitlines() knows, tabs, padding, dashes,
 # backticks, non-ASCII, and the empty-cell markers.
-PIECES = ["a", "word", "R-001", "ISSUE-12", "|", "||", "\n", "\r\n", "\r", "\x0b", "\x0c", "\x1c", "\x85", " ",
-          " ", "\t", " ", "  ", "—", "-", "`", "\\", "\\|", "é", "日本", "😀", "~05:05Z", "x" * 120, "<b>", "#"]
+PIECES = ["a", "word", "R-001", "ISSUE-12", "|", "||", "\n", "\r\n", "\r", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", " ",
+          " ", "\t", " ", "  ", "—", "-", "`", "\\", "\\|", "é", "日本", "😀", "~05:05Z", "x" * 8, "<b>", "#"]
 
 
 def text(rng, most=12):
@@ -36,21 +36,45 @@ class RowReadBack(TempDir):
     def test_a_written_row_reads_back_identical(self):
         rng = random.Random(412)
         led = ls.Ledger(self.root)
-        ids = []
+        expected_rows = {}
         for case in range(CASES):
-            fields = {f: text(rng) for f in rng.sample(["key", "owner", "next", "waits", "due"], rng.randint(1, 5))}
-            row_id = rng.choice(ids) if ids and rng.random() < 0.5 else None
+            fields = {f: text(rng, most=10) for f in rng.sample(["key", "owner", "next", "waits", "due"], rng.randint(1, 5))}
+            row_id = rng.choice(list(expected_rows)) if expected_rows and rng.random() < 0.5 else None
             if row_id is None:
                 fields.setdefault("next", "a")
-            try:
-                written = led.write_row(row_id, **fields)
-            except ValueError:  # a blank next action is refused, which is the invariant for that case
-                self.assertIn(ls.clean(fields.get("next", "x")), ls.NONE, f"case {case}: {fields!r}")
-                continue
-            ids.append(written["id"])
-            read = {r["id"]: {k: r[k] for k in ls.FIELDS} for r in led.rows()}
-            self.assertEqual(read[written["id"]], written, f"case {case}: wrote {fields!r}")
-            self.assertTrue(all(r["_cols"] == len(ls.COLUMNS) for r in led.rows()), f"case {case}: {fields!r}")
+                expected = {"id": f"R-{len(expected_rows) + 1:03d}", "key": "—", "owner": "coordinator",
+                            "next": "", "waits": "—", "due": "—"}
+            else:
+                expected = expected_rows[row_id].copy()
+            expected.update({field: " ".join(value.splitlines()).replace("|", "/").strip()
+                             for field, value in fields.items()})
+            with self.subTest(case=case, row_id=row_id, fields=fields):
+                if expected["next"] in ("", "—", "-"):
+                    with self.assertRaisesRegex(ValueError, "next action is required"):
+                        led.write_row(row_id, **fields)
+                else:
+                    self.assertEqual(led.write_row(row_id, **fields), expected)
+                    expected_rows[expected["id"]] = expected
+                rows = ls.Ledger(self.root).rows()
+                self.assertEqual({row["id"]: {k: row[k] for k in expected} for row in rows}, expected_rows)
+                self.assertTrue(all(row["_cols"] == 6 for row in rows))
+
+    def test_spilled_row_keeps_the_wait_and_preserves_full_text_in_note(self):
+        led = ls.Ledger(self.root)
+        long_next = "Read | the log\n" + "output " * 90 + "end"
+        waits = "owner: decision; then review results"
+        led.write_row(None, next=long_next, waits=waits)
+
+        read, = ls.Ledger(self.root).rows()
+        self.assertEqual(read["waits"], waits)
+        self.assertEqual(ls.queue_of(read), "DECISION")
+        pointer = " (detail: ledger/notes/R-001.md)"
+        self.assertTrue(read["next"].endswith(pointer))
+        expected_next = "Read / the log " + "output " * 90 + "end"
+        self.assertTrue(expected_next.startswith(read["next"].removesuffix(pointer)))
+        self.assertLessEqual(ls.row_chars(read), 500)
+        self.assertIn(f"next action: {expected_next}\nwaits on: {waits}\n",
+                      (self.root / "ledger" / "notes" / "R-001.md").read_text())
 
 
 class ApproximateTimes(TempDir):
@@ -73,6 +97,22 @@ class ApproximateTimes(TempDir):
         for stamp in self.stamps(rng):
             ref = f'"{rng.choice(["go ahead", "yes, ship it", "merge it"])}" 2026-01-16 {stamp}'
             self.assertIsNotNone(ls.proof_problem("owner", ref, "the owner approved the plan"), ref)
+
+    def test_owner_proof_refuses_an_approximate_date_or_impossible_timestamp(self):
+        rng = random.Random(4128)
+        stamps = ["circa 2026-01-16 14:02Z", "2026-01-16 29:99Z", "2026-02-29 14:02Z"]
+        for _ in range(CASES):
+            hour, minute = rng.randrange(24), rng.randrange(60)
+            zone = rng.choice(self.ZONES)
+            stamps.extend((
+                f"{rng.choice(self.MARKS)}2026-01-16 {hour:02d}:{minute:02d}{zone}",
+                f"2026-01-16 {rng.randrange(24, 100)}:{minute:02d}{zone}",
+                f"2026-01-16 {hour:02d}:{rng.randrange(60, 100)}{zone}",
+                f"2026-02-{rng.randrange(29, 32)} {hour:02d}:{minute:02d}{zone}",
+            ))
+        for stamp in stamps:
+            with self.subTest(stamp=stamp):
+                self.assertIsNotNone(ls.proof_problem("owner", f'"Ship it" {stamp}', "decision recorded"))
 
     def test_owner_proof_keeps_an_exact_time(self):
         rng = random.Random(4122)
@@ -133,6 +173,40 @@ class FoundByTheProperties(TempDir):
             self.assertIsNone(ls.proof_problem("merged", sha, "merged the PR"), sha)
             self.assertIsNone(ls.proof_problem("ci", f"{sha} success", "checks on the head"), sha)
 
+    def test_an_existing_archive_accepts_short_letter_only_shas(self):
+        archive = self.root / "ledger" / "closed-2026-01.md"
+        archive.parent.mkdir()
+        archive.write_text(
+            "| id | key | closed | proof | last next action |\n|---|---|---|---|---|\n"
+            "| R-001 | — | 2026-01-16 14:00Z | merged: fcaabad - merged the PR | Merge acme/widgets#16 |\n"
+            "| R-002 | — | 2026-01-16 14:00Z | ci: fcaabad success - checked the PR | Check acme/widgets#16 |\n"
+        )
+        self.assertEqual(ls.Ledger(self.root).check(), ([], []))
+
+    def test_a_trusted_merge_lookup_can_verify_a_short_letter_only_sha(self):
+        lookups = []
+
+        def lookup(repo, number):
+            lookups.append((repo, number))
+            return "fcaabad1234567890abcdef1234567890abcdef1"
+
+        policy = ls.compose_close_policies(lambda row, proof: None, ls.pr_merge_policy(lookup))
+        led = ls.Ledger(self.root, can_close=policy)
+        row = led.write_row(None, next="Merge acme/widgets#16")
+        with self.assertRaises(ls.ProofRefused):
+            ls.Ledger(self.root, can_close=lambda row, proof: None).close_row(
+                row["id"], "merged", "fcaabad", "merged the PR", now=T0)
+        with self.assertRaises(ls.CloseRefused):
+            led.close_row(row["id"], "merged", "defaced", "merged the PR", now=T0)
+        led.close_row(row["id"], "merged", "fcaabad", "merged the PR", now=T0)
+        self.assertEqual(lookups, [("acme/widgets", 16)] * 2)
+        self.assertEqual(ls.Ledger(self.root).check(), ([], []))
+
+        no_pr = led.write_row(None, next="Merge the fix")
+        with self.assertRaises(ls.CloseRefused):
+            led.close_row(no_pr["id"], "merged", "fcaabad", "merged locally", now=T0)
+        self.assertEqual(len(lookups), 2)
+
     def test_config_needs_the_setting_not_the_words_read_back(self):
         for ref in ("readback", "read back", "read back the value"):
             self.assertIsNotNone(ls.proof_problem("config", ref, "flag off"), ref)
@@ -148,7 +222,8 @@ class FoundByTheProperties(TempDir):
 
     def test_the_owner_s_own_words_may_name_a_rough_time(self):
         words = ("Schedule the deploy around 5:00 UTC", "ship it ~05:00Z", "after xx:xx is fine",
-                 "don't deploy around 5:00 UTC", "don’t deploy around 5:00 UTC", "it's fine, ship ~5:00")
+                 "don't deploy around 5:00 UTC", "don’t deploy around 5:00 UTC", "it's fine, ship ~5:00",
+                 "Use the vendors’ prices around 5:00 UTC", "Use the vendors' prices around 5:00 UTC")
         quotes = (('"', '"'), ("“", "”"), ("‘", "’"), ("'", "'"))
         for said in words:
             for left, right in quotes:
@@ -156,6 +231,14 @@ class FoundByTheProperties(TempDir):
                 self.assertIsNone(ls.proof_problem("owner", f"{quoted} 2026-01-16 14:02Z", "decided"), quoted)
                 self.assertIsNotNone(ls.proof_problem("owner", f"{quoted} 2026-01-16", "decided"), quoted)
                 self.assertIsNotNone(ls.proof_problem("owner", f"{quoted} 2026-01-16 ~14:02Z", "decided"), quoted)
+
+    def test_owner_proof_needs_a_nonempty_paired_quote(self):
+        for quote in ('" "', "‘ ’", "' '", '"ship it’', '‘ship it"', "'ship it”"):
+            with self.subTest(quote=quote):
+                self.assertIsNotNone(ls.proof_problem("owner", f"{quote} 2026-01-16 14:02Z", "decision recorded"))
+        for stamp in ("14:02Z", "2024-02-29 5:02 UTC"):
+            with self.subTest(stamp=stamp):
+                self.assertIsNone(ls.proof_problem("owner", f'"Ship it" {stamp}', "decision recorded"))
 
 
 class OneLiveClaimPerRow(TempDir):
