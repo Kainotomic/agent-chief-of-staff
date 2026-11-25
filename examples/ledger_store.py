@@ -30,7 +30,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable, ContextManager
 
@@ -50,7 +50,10 @@ NOT_PROOF_WORDS = {"verified", "ok", "okay", "done", "works", "work", "worked", 
                    "green", "passed", "passing", "pass", "success", "successful", "lgtm", "complete", "completed",
                    "fixed", "yes", "looks", "all", "it", "is", "the", "worker", "said", "says", "everything", "should",
                    "now", "tested", "and", "be"}
-SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Short all-letter hex tokens can be words. New proofs need a longer ref or a digit unless a merge
+# policy verifies the prefix against the PR. Archives retain the original SHA grammar.
+SHA = re.compile(r"\b(?:(?=[a-f]*\d)[0-9a-f]{7,40}|[a-f]{12,40})\b")
+SHORT_LETTER_SHA = re.compile(r"\b[a-f]{7,11}\b")
 RUN_ID = re.compile(r"\b\d{6,}\b")
 COUNTS = re.compile(r"\bRan \d+\b|\b\d+\s*(?:tests?|passed|passing|failed|failures|errors|skipped)\b|\b\d+\s*/\s*\d+\b"
                     r"|\b\d+ OK\b|\bOK \(", re.I)
@@ -88,10 +91,17 @@ HTTP_STATUS = re.compile(r"(?<![\w.:/-])([1-5]\d\d)(?![\w./:-]|\s*(?:ms|s|sec|se
 PASS_RATIO = re.compile(r"(?<![\w.])(\d+)\s*/\s*(\d+)\s*(?:tests?|passed|passing|ok|green)\b", re.I)
 LIVE_STATUS = re.compile(r"(?<![\w.-])(?:[1-5]\d\d|healthy|success|passed|PASS)(?![\w-]|\.\w)")  # not inside an id
 ID_TOKEN = re.compile(r"(?<![\w.-])(?=[\w.-]*\d)[\w.-]{4,}(?![\w.-])")
-READ_BACK = re.compile(r"read[ -]?back|readback|\w\s*(?:==?|->|→)\s*\S", re.I)
+READ_BACK = re.compile(r"\w\s*(?:==?|->|→)\s*\S")  # the setting as read back: name=value, not the words "read back"
+LEGACY_READ_BACK = re.compile(r"read[ -]?back", re.I)
 MESSAGE_ID = re.compile(r"\d{4,}")
-QUOTED = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
-WHEN = re.compile(r"\b\d{1,2}:\d\d(?!\d)")  # a time of day, not a bare date
+# Archive checks also accept the quote and clock patterns used before OWNER_REF.
+LEGACY_OWNER_QUOTE = re.compile(r"[\"'“‘][^\"“”‘’]+?[\"'”’]")
+LEGACY_OWNER_TIME = re.compile(r"\b\d{1,2}:\d\d(?!\d)")
+# Match the complete ref so apostrophes inside the quote cannot end it before the timestamp.
+OWNER_REF = re.compile(
+    r"""(?P<quote>"[^"]*"|“[^”]*”|'(?:[^']|(?<=\w)')*'|‘(?:[^‘’]|(?<=\w)’)*’) """
+    r"(?:(?P<date>[0-9]{4}-[0-9]{2}-[0-9]{2}) )?(?P<clock>[0-9]{1,2}:[0-9]{2})(?:Z| UTC| PT)?"
+)
 VOID_REASON = re.compile(r"\b(?:tests?|testing|fixture|accident\w*|mistake\w*|in error|by error|typo|stray|created by)\b",
                          re.I)
 PROOF_CELL = re.compile(r"^(?P<kind>[a-z]+): (?P<ref>.+?) - (?P<text>.+)$")
@@ -336,11 +346,12 @@ class Ledger:
         written next, then the ledger line is removed. Each of the three is a whole-file atomic replace, so a crash
         leaves every file old or new, never a torn tail. A crash between two of them leaves the id in both the ledger
         and the archive, which check() reports; finish by re-running the same close_row call: it finds its own
-        archived row (same id, kind and ref), writes nothing again and removes the ledger line. An id already
-        archived with other proof is refused (ids are never reused)."""
+        archived row (same id, kind and ref), uses archive proof validation for the retry and removes the ledger
+        line. An id already archived with other proof is refused (ids are never reused)."""
         proof = Proof(kind, " ".join(str(ref or "").split()), " ".join(str(text or "").split()))
-        problem = proof_problem(proof.kind, proof.ref, proof.text)
-        if problem:
+        verifies_merge_sha = getattr(self.can_close, "_verifies_merge_sha", False) is True
+        problem = proof_problem(proof.kind, proof.ref, proof.text, verify_merge_sha=verifies_merge_sha)
+        if problem and proof_problem(proof.kind, proof.ref, proof.text, archived=True):
             raise ProofRefused(f"{row_id} not closed: {problem}")
         now = now or datetime.now(timezone.utc)
         with self._fenced(expect_epoch), file_lock(self.lock):
@@ -357,6 +368,12 @@ class Ledger:
                                    f"({', '.join(first['ids']) or 'no id left'}) is {first['problem']}"
                                    + (f" (+{len(torn) - 1} more)" if len(torn) > 1 else "")
                                    + "; repair the archive by hand first (check() lists every line)")
+            # Match under the lock before allowing a retry to use the older proof format.
+            archived = [r for r in self.closed_rows() if r["id"] == row_id]
+            same = next((r for r in archived if (p := parse_proof(r["proof"])) and (p.kind, p.ref) == (proof.kind, clean(proof.ref))),
+                        None)
+            if problem and same is None:
+                raise ProofRefused(f"{row_id} not closed: {problem}")
             if kind == "folded":
                 reason = self._fold_problem(row_id, proof.ref, rows)
                 if reason:
@@ -365,10 +382,6 @@ class Ledger:
                 reason = self.can_close(row, proof)
                 if reason:
                     raise CloseRefused(reason)
-            # A retry after a crash finds its own archived row: compare as archived (clean() rewrites pipes).
-            archived = [r for r in self.closed_rows() if r["id"] == row_id]
-            same = next((r for r in archived if (p := parse_proof(r["proof"])) and (p.kind, p.ref) == (proof.kind, clean(proof.ref))),
-                        None)
             if archived and same is None:
                 raise CloseRefused(f"{row_id} is already archived in {archived[0]['_file']} with other proof "
                                    f"({archived[0]['proof']}); ids are never reused")
@@ -498,7 +511,7 @@ class Ledger:
             if proof is None:
                 errors.append(f"{where}: proof must be `kind: ref - text` (close rows only through close_row)")
                 continue
-            problem = proof_problem(proof.kind, proof.ref, proof.text)
+            problem = proof_problem(proof.kind, proof.ref, proof.text, archived=True)
             if problem:
                 errors.append(f"{where}: {problem}")
         return errors
@@ -517,17 +530,18 @@ def not_proof(value: str) -> bool:
     return not re.search(r"\d", value or "") and all(w in NOT_PROOF_WORDS for w in words)
 
 
-def proof_problem(kind: str, ref: str, text: str) -> str | None:
+def proof_problem(kind: str, ref: str, text: str, *, archived: bool = False,
+                  verify_merge_sha: bool = False) -> str | None:
     """None when (kind, ref, text) is structured proof, else why not. Static, so check() can re-run it on the
     archive. The ref carries the checkable token; text says what it proves.
 
     tests    counts ("Ran 88 tests ... OK", "64/64") or a CI run id
     ci       a run id or head SHA plus the conclusion "success"
-    merged   the merge commit SHA, alone
+    merged   the merge commit SHA, alone (short all-letter SHAs need a PR lookup for a new close)
     deployed a deploy or run id plus a live check status ("readyz 200", "healthy")
-    config   the setting read back ("autoDeploy=false", "read back ...")
+    config   the setting read back as name=value ("autoDeploy=false read back")
     message  the message, comment or review id
-    owner    the owner's words in quotes, with the time
+    owner    the owner's words in paired quotes, then the exact clock minute with optional date and zone
     folded   the open row id it was folded into (that row must mention this one; close_row checks)
     void     for a test or accidental row; the reason says which
 
@@ -548,19 +562,33 @@ def proof_problem(kind: str, ref: str, text: str) -> str | None:
         return red
     if kind == "tests" and not (COUNTS.search(ref) or RUN_ID.search(ref)):
         return "a tests proof needs the counts or a run id, not prose"
-    if kind == "ci" and not ((RUN_ID.search(ref) or SHA.search(ref)) and CI_SUCCESS.search(ref)):
-        return "a ci proof needs a run id or head SHA plus the conclusion (success)"
-    if kind == "merged" and not re.fullmatch(r"[0-9a-f]{7,40}", ref):
-        return "a merged proof is the merge commit SHA"
+    if kind == "ci":
+        has_ref = RUN_ID.search(ref) or SHA.search(ref) or (archived and SHORT_LETTER_SHA.search(ref))
+        if not (has_ref and CI_SUCCESS.search(ref)):
+            return "a ci proof needs a run id or head SHA plus the conclusion (success)"
+    if kind == "merged" and not SHA.fullmatch(ref):
+        if not ((archived or verify_merge_sha) and SHORT_LETTER_SHA.fullmatch(ref)):
+            return "a merged proof needs a merge commit SHA with a digit, 12+ characters, or a verified PR prefix"
     if kind == "deployed":
         if not any(ID_TOKEN.search(ref[:m.start()] + " " + ref[m.end():]) for m in LIVE_STATUS.finditer(ref)):
             return "a deployed proof needs a deploy or run id plus a live check status"
-    if kind == "config" and not READ_BACK.search(ref):
-        return "a config proof needs the setting read back (name=value)"
+    if kind == "config":
+        if not (READ_BACK.search(ref) or (archived and LEGACY_READ_BACK.search(ref))):
+            return "a config proof needs the setting read back (name=value)"
     if kind == "message" and not MESSAGE_ID.search(ref):
         return "a message proof needs the message, comment or review id"
-    if kind == "owner" and not (QUOTED.search(ref) and WHEN.search(ref)):
-        return "an owner proof needs the owner's quoted words and the time"
+    if kind == "owner":
+        if archived and LEGACY_OWNER_QUOTE.search(ref) and LEGACY_OWNER_TIME.search(ref):
+            return None
+        match = OWNER_REF.fullmatch(ref)
+        if not match or not match["quote"][1:-1].strip():
+            return "an owner proof needs the owner's quoted words followed by the exact clock minute"
+        try:
+            datetime.strptime(match["clock"], "%H:%M")
+            if match["date"]:
+                date.fromisoformat(match["date"])
+        except ValueError:
+            return "an owner proof needs a valid date and clock minute"
     if kind == "folded" and not ROW_ID.match(ref):
         return "a folded proof's ref is the open row id it was folded into"
     if kind == "void" and not VOID_REASON.search(f"{ref} {text}"):
@@ -650,6 +678,7 @@ def compose_close_policies(*policies: Callable[[dict, Proof], str | None] | None
             if reason:
                 return reason
         return None
+    can_close._verifies_merge_sha = any(getattr(policy, "_verifies_merge_sha", False) is True for policy in policies)
     return can_close
 
 
@@ -660,16 +689,20 @@ def pr_merge_policy(lookup: Callable[[str, int], str | None]) -> Callable[[dict,
     lookup(repo, number) returns the merge commit SHA, or None when the PR is not merged; inject your VCS client
     (for GitHub: `gh pr view N -R repo --json state,mergeCommit`). A lookup error refuses the close."""
     def can_close(row: dict, proof: Proof) -> str | None:
-        prs = pr_refs(" ".join(str(row.get(k, "")) for k in FIELDS))
-        if proof.kind != "merged" or not prs:
+        if proof.kind != "merged":
             return None
+        short = SHORT_LETTER_SHA.fullmatch(proof.ref) is not None
+        prs = pr_refs(" ".join(str(row.get(k, "")) for k in FIELDS))
+        if not prs:
+            return "a short all-letter merge SHA needs a PR to verify it" if short else None
         seen, unmerged, matched = [], [], False
         for repo, number in prs:
             try:
                 sha = lookup(repo, number)
             except Exception as error:  # a broken lookup must not read as "allowed"
                 return f"cannot read {repo}#{number} ({error})"
-            matched = matched or bool(sha and sha.lower().startswith(proof.ref.lower()))
+            matched = matched or bool(sha and sha.lower().startswith(proof.ref.lower())
+                                      and (not short or SHA.fullmatch(sha.lower())))
             if not sha:
                 unmerged.append(f"{repo}#{number}")
             seen.append(f"{repo}#{number} " + (f"merged {sha[:7]}" if sha else "not merged"))
@@ -679,6 +712,7 @@ def pr_merge_policy(lookup: Callable[[str, int], str | None]) -> Callable[[dict,
             return (f"the row also names {', '.join(unmerged)}, not merged ({'; '.join(seen)}); close it when every PR "
                     "it names is merged, or move the others to their own row")
         return None
+    can_close._verifies_merge_sha = True
     return can_close
 
 

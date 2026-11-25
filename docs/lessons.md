@@ -21,6 +21,8 @@ Each of these happened at least once in a real fleet. They are written as genera
 ## Testing and verification
 
 - **Property tests find what example tests don't.** In their first hour, properties on the coordinator's own scripts found two real bugs: the duplicate guard returned early for rows with no tracker key and never checked live claims, and the timestamp check refused `~HH:MMZ` but let `~ HH:MMZ` through.
+- **The examples had the same kind of gap.** Run on this repo, the properties found that an English word made of hex letters (`defaced`) passed as a commit SHA, that the words "read back" passed as a config read-back with no setting, and that an owner proof accepted an approximate time (`circa 21:38 UTC`).
+- **Check the caller's inputs as well as the read-back.** A row property that compared the returned row with the stored row passed even when the writer discarded the supplied wait. Build the expected row from the caller's fields and the previous state.
 - **A unit test reached production.** The same pass found a test that, through a stale fixture path, ran a real database query against a production host. Stub every external call, and fail a test that tries to reach the network.
 - **Embed where you serve.** Vectors embedded on a GPU and queries embedded on a CPU drift slightly and reorder close results. Re-embed everything on the runtime that serves the queries.
 - **A dump and restore can change results.** It rebuilds indexes. When a differential check fails after a restore, copy the volume byte for byte.

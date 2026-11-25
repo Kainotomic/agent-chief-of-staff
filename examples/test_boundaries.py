@@ -123,7 +123,7 @@ class MultiPrMergedProof(TempDir):
     def test_the_ref_is_still_one_of_their_merge_shas(self):
         ledger, rid = self.ledger({1: "abcdef1234567", 2: "1234567abcdef"})
         with self.assertRaises(ls.CloseRefused) as caught:
-            ledger.close_row(rid, "merged", "fffffff", "x", now=T0)
+            ledger.close_row(rid, "merged", "fffff0f", "x", now=T0)
         self.assertIn("is not the merge SHA", str(caught.exception))
 
 

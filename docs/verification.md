@@ -31,12 +31,12 @@ After 3 failed fix rounds on the same failure, stop. Hand it to a person with wh
 
 The coordinator's scripts guard everything else, so test them hardest. Write properties, not only examples:
 
-- a row that was written reads back identical;
-- an approximate or placeholder timestamp is refused in every spelling (with or without a space after the tilde, a one-digit hour, `xx:xx`);
-- a close whose proof is only prose is refused for every proof kind;
+- A fresh ledger read preserves supplied cells after normalization and preserves cells omitted from updates. Spilled text remains in the row's note.
+- New owner closes and due cells refuse approximate or placeholder times. New owner closes also reject impossible dates and clock times. Archive checks accept the original owner proof format.
+- a close whose proof is only prose is refused for every proof kind (`void` takes a reason, and only one naming a test or an accident);
 - two live claims on one row are refused, including on a row with no tracker key ([examples/dispatch_guard.py](../examples/dispatch_guard.py) checks the row's claim and live workers whether or not there is a key).
 
-In their first hour, properties like these found two real bugs and one dangerous test (see [lessons.md](lessons.md#testing-and-verification)). **Tests stub every external call.** A test that can reach a real database, tracker or host will, one day, through a stale fixture path.
+In their first hour, properties like these found two real bugs and one dangerous test (see [lessons.md](lessons.md#testing-and-verification)). [examples/test_properties.py](../examples/test_properties.py) runs all four on this repo's examples with a seeded generator, standard library only; it found three gaps here too. The compatibility tests also check refs written by the prior ledger rules for all nine proof kinds. They exercise stricter new closes for `ci`, `merged`, `config` and `owner`. **Tests stub every external call.** A test that can reach a real database, tracker or host will, one day, through a stale fixture path.
 
 ## Differential checks before a cutover
 
